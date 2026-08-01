@@ -64,7 +64,8 @@ def run_speakeasy():
     import speakeasy.config as cfg
     import copy
     custom_config = copy.deepcopy(cfg.DEFAULT_CONFIG_DATA)
-    custom_config["command_line"] = "crackme_boss.exe 300"
+    # We pass no arguments here, the input is hardcoded in crackme_boss.c's get_input()
+    custom_config["command_line"] = "crackme_boss.exe"
     custom_config.setdefault("modules", {})["functions_always_exist"] = True
     
     se = speakeasy.Speakeasy(config=custom_config)
@@ -94,16 +95,15 @@ def run_speakeasy():
 
     if tracker.trace_history:
         target_tick = -1
-        # 0x140001803: mov dword ptr [rax], edx
-        for record in tracker.trace_history:
-            if record.address == 0x140001803:
+        # Track eax at the password check (cmp eax, 0xd80)
+        for record in reversed(tracker.trace_history):
+            if record.mnemonic == "cmp" and "0xde1770ef" in record.op_str.lower():
                 target_tick = record.tick
                 break
             
         if target_tick != -1:
             print(f"[!] Target Found at Tick {target_tick}!")
-            # We track edx which avoids tracing into malloc
-            desc = Descendant(target="edx", at_tick=target_tick)
+            desc = Descendant(target="eax", at_tick=target_tick)
             slice_records = tracker.build_backward_slice(desc)
             print("\n[+] ===========================================")
             print(f"[+] Final Slice Extracted ({len(slice_records)} instructions)")
@@ -127,21 +127,23 @@ def run_speakeasy():
 
             translator.translate_slice(symbolic_slice)
             
-            # Add constraint: edx == 3456
-            eax_final = translator.reg_state.get('rdx', None)
-            if eax_final is not None:
-                print("[+] Adding Goal Constraint: rdx == 3456")
-                translator.solver.add(eax_final == 3456)
+            # Add constraint: rax == 0xDE1770EF
+            # Since check_key compares the final read memory with 0xDE1770EF
+            rax_final = translator.reg_state.get('rax', None)
+            if rax_final is not None:
+                print("[+] Adding Goal Constraint: rax == 0xDE1770EF")
+                translator.solver.add(rax_final == 0xDE1770EF)
             
             print("\n[*] Z3 Solving...")
             if translator.solver.check() == z3.sat:
                 model = translator.solver.model()
                 print(f"\n[SUCCESS] Z3 SOLVED THE BOSS FIGHT!")
                 for d in model.decls():
-                    if 'rax' in d.name() and '_0' in d.name():
-                        solution = model[d].as_long() & 0xFFFFFFFF
-                        print(f"[SUCCESS] The correct user_key is: {solution}")
-                        break
+                    val = model[d]
+                    if z3.is_bv_value(val):
+                        print(f"[SUCCESS] {d.name()} = {val.as_long() & 0xFFFFFFFF}")
+                    else:
+                        print(f"[SUCCESS] {d.name()} = {val}")
             else:
                 print("\n[!] Z3 returned UNSAT. No solution found!")
         else:

@@ -51,6 +51,30 @@ class Tracker:
         "jo": ["flag_of"], "jno": ["flag_of"]
     }
 
+    REGISTER_SIZES = {
+        "rax": 8, "rbx": 8, "rcx": 8, "rdx": 8, "rsi": 8, "rdi": 8, "rbp": 8, "rsp": 8,
+        "r8": 8, "r9": 8, "r10": 8, "r11": 8, "r12": 8, "r13": 8, "r14": 8, "r15": 8,
+        "eax": 4, "ebx": 4, "ecx": 4, "edx": 4, "esi": 4, "edi": 4, "ebp": 4, "esp": 4,
+        "r8d": 4, "r9d": 4, "r10d": 4, "r11d": 4, "r12d": 4, "r13d": 4, "r14d": 4, "r15d": 4,
+        "ax": 2, "bx": 2, "cx": 2, "dx": 2, "si": 2, "di": 2, "bp": 2, "sp": 2,
+        "r8w": 2, "r9w": 2, "r10w": 2, "r11w": 2, "r12w": 2, "r13w": 2, "r14w": 2, "r15w": 2,
+        "al": 1, "ah": 1, "bl": 1, "bh": 1, "cl": 1, "ch": 1, "dl": 1, "dh": 1,
+        "sil": 1, "dil": 1, "bpl": 1, "spl": 1,
+        "r8b": 1, "r9b": 1, "r10b": 1, "r11b": 1, "r12b": 1, "r13b": 1, "r14b": 1, "r15b": 1,
+    }
+
+    def _calculate_memory_write_size(self, record: TraceRecord) -> int:
+        write_size = 1 # Default
+        for reg in record.regs_read:
+            if reg in self.REGISTER_SIZES:
+                write_size = max(write_size, self.REGISTER_SIZES[reg])
+                
+        if write_size == 1:
+            if "qword ptr" in record.op_str.lower(): write_size = 8
+            elif "dword ptr" in record.op_str.lower(): write_size = 4
+            elif "word ptr" in record.op_str.lower(): write_size = 2
+        return write_size
+
     def __init__(self):
         self.trace_history: List[TraceRecord] = []
         from asm_analyzer.engine.path_tree import PathTree
@@ -123,10 +147,14 @@ class Tracker:
                     pointer_regs_used = [r for r in record.regs_read if r in ('eax','ebx','ecx','edx','esi','edi','ebp','esp','rax','rbx','rcx','rdx','rsi','rdi','rbp','rsp', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15')]
                     if not pointer_regs_used:
                         # Absolute Must-Alias (No registers used as pointers)
+                        write_size = self._calculate_memory_write_size(record)
+                        base_addr = record.mem_write[0]
+                        affected_addresses = range(base_addr, base_addr + write_size)
+                        
                         for target in tracked_mem:
-                            if target in record.mem_write:
+                            if target in affected_addresses:
                                 writes_to_target_mem = True
-                                print(f"  -> [Must-Alias] Absolute write to [0x{target:x}] at Tick {record.tick}")
+                                print(f"  -> [Must-Alias] Absolute write to [0x{target:x}] at Tick {record.tick} (Size: {write_size} bytes)")
                                 break
                     else:
                         # Symbolic Pointer Write (May-Alias for ALL tracked memory)

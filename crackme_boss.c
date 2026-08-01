@@ -1,42 +1,64 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
-int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        printf("Usage: %s <key>\n", argv[0]);
-        return 1;
-    }
+// Crackme Boss 
+// Designed to break naive Backward Slicing and Flat ITE Memory models
 
-    int user_key = atoi(argv[1]);
-    
-    // 1. Data Flow (Math)
-    int transformed = (user_key ^ 0x5A) * 3;
-    
-    // 2. Control Flow (Conditions)
-    if (transformed < 1000) {
-        printf("Fail 1! Number too small.\n");
-        return 1;
-    }
-
-    // 3. Memory Aliasing (Pointers)
-    int *heap_mem = (int*)malloc(sizeof(int));
-    if (heap_mem == NULL) {
-        return 1;
-    }
-    
-    *heap_mem = transformed; // Write via symbolic pointer
-    
-    // Some dummy operations
-    int dummy = transformed + 5;
-    
-    // Final check reading from memory
-    if (*heap_mem == 3456) {
-        printf("SUCCESS! You cracked it!\n");
-        free(heap_mem);
+int check_key(int key) {
+    // Trap 1: The Control Dependency Trap
+    // The backward slicer doesn't track path constraints (Forward tracker is disabled).
+    // So if the engine finds a 'key' that passes the math below, it might be < 5000.
+    if (key < 5000) {
+        printf("Key too small!\n");
         return 0;
-    } else {
-        printf("Fail 2! Try again.\n");
-        free(heap_mem);
+    }
+    if (key % 2 == 0) {
+        printf("Key must be odd!\n");
+        return 0;
+    }
+
+    // Math operation to track
+    int magic = (key ^ 0x55) * 3;
+
+    // Trap 2: The Partial Overlap Trap
+    // Write 4 bytes, write 2 bytes in the middle, read 4 bytes.
+    // Engine checking `addr == write_addr` will fail.
+    unsigned char buffer[16] = {0};
+    
+    // Write a 32-bit value to buffer
+    unsigned int *dw_ptr = (unsigned int *)buffer;
+    *dw_ptr = 0xDEADBEEF; // Little endian: EF BE AD DE
+    
+    // Overwrite the middle with our magic value (partial write!)
+    unsigned short *w_ptr = (unsigned short *)(buffer + 1);
+    *w_ptr = (unsigned short)magic; 
+    
+    // If key = 1957 -> magic = 6000 (0x1770).
+    // buffer becomes: EF 70 17 DE (which is 0xDE1770EF)
+    
+    // Check the final 32-bit value
+    if (*dw_ptr == 0xDE1770EF) { 
         return 1;
     }
+    
+    return 0;
+}
+
+int get_input() {
+    // Return a concrete value that will force the emulator to take the winning path
+    // We will slice backward and stop here, leaving the return value symbolic in Z3.
+    // 5001 passes key < 5000 (false) and key % 2 == 0 (false).
+    return 5001;
+}
+
+int main(int argc, char **argv) {
+    int key = get_input();
+    
+    if (check_key(key)) {
+        printf("ACCESS GRANTED - YOU DEFEATED THE BOSS!\n");
+    } else {
+        printf("ACCESS DENIED\n");
+    }
+    return 0;
 }

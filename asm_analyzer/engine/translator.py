@@ -23,21 +23,68 @@ class Z3Translator:
     def __init__(self):
         self.solver = z3.Solver()
         self.reg_state: Dict[str, z3.BitVecRef] = {}
-        self.mem_state: Dict[str, z3.BitVecRef] = {}
+        self.reg_state: Dict[str, z3.BitVecRef] = {}
         self.flag_state: Dict[str, z3.BoolRef] = {}
-        self.ssa_versions: Dict[str, int] = {}
+        self.latest_versions: Dict[str, int] = {}
+        self.memory_writes: List[Tuple[z3.BitVecRef, z3.BitVecRef, int]] = []
+        self.current_instr: TraceRecord = None
+        self.mem_read_idx = 0
+        self.mem_write_idx = 0
+
+    def _parse_memory_address(self, op_str: str) -> z3.BitVecRef:
+        match = re.search(r'\[(.*?)\]', op_str)
+        if not match:
+            return z3.BitVecVal(0, 64)
+        inner = match.group(1).replace(' ', '')
+        
+        # Handle cases like gs: or cs:
+        if ':' in inner:
+            inner = inner.split(':')[1]
+            
+        tokens = re.findall(r'[+-]?\w+(?:\*\d+)?', inner)
+        
+        addr_ast = z3.BitVecVal(0, 64)
+        for token in tokens:
+            sign = 1
+            if token.startswith('+'):
+                token = token[1:]
+            elif token.startswith('-'):
+                sign = -1
+                token = token[1:]
+                
+            if '*' in token:
+                reg_name, scale = token.split('*')
+                reg_ast, _ = self._read_operand(reg_name, hint_size=64)
+                if reg_ast.size() != 64:
+                    reg_ast = z3.ZeroExt(64 - reg_ast.size(), reg_ast)
+                term = reg_ast * int(scale, 0)
+            elif token.startswith('0x') or token.isdigit():
+                term = z3.BitVecVal(int(token, 0), 64)
+            elif token == 'rip':
+                rip_val = self.current_instr.address + self.current_instr.size
+                term = z3.BitVecVal(rip_val, 64)
+            else:
+                term, _ = self._read_operand(token, hint_size=64)
+                if term.size() != 64:
+                    term = z3.ZeroExt(64 - term.size(), term)
+                    
+            if sign == 1:
+                addr_ast = addr_ast + term
+            else:
+                addr_ast = addr_ast - term
+                
+        return addr_ast
 
     def _get_new_ssa_name(self, name: str) -> str:
-        if name not in self.ssa_versions:
-            self.ssa_versions[name] = 0
-        else:
-            self.ssa_versions[name] += 1
-        return f"{name}_{self.ssa_versions[name]}"
+        tick = self.current_instr.tick if self.current_instr else 0
+        self.latest_versions[name] = tick
+        return f"{name}_t{tick}"
 
     def _get_phys_reg(self, phys_name: str) -> z3.BitVecRef:
         if phys_name not in self.reg_state:
-            ssa_name = self._get_new_ssa_name(phys_name)
+            ssa_name = f"{phys_name}_t0"
             self.reg_state[phys_name] = z3.BitVec(ssa_name, 64)
+            self.latest_versions[phys_name] = 0
         return self.reg_state[phys_name]
 
     def _write_flag(self, flag_name: str, bool_val):
@@ -100,8 +147,7 @@ class Z3Translator:
             
         # 3. Memory
         if 'ptr' in op_str:
-            mem_name = op_str.replace('dword ptr ', 'Mem_').replace('qword ptr ', 'Mem_').replace('byte ptr ', 'Mem_').replace('word ptr ', 'Mem_')
-            mem_name = mem_name.replace('[', '').replace(']', '').replace(' ', '').replace('-', '_minus_').replace('+', '_plus_')
+            addr_ast = self._parse_memory_address(op_str)
             
             size = 64
             if 'dword' in op_str: size = 32
@@ -109,11 +155,30 @@ class Z3Translator:
             elif 'byte' in op_str: size = 8
             else: size = hint_size
             
-            if mem_name not in self.mem_state:
-                ssa_name = self._get_new_ssa_name(mem_name)
-                self.mem_state[mem_name] = z3.BitVec(ssa_name, size)
-            
-            return self.mem_state[mem_name], size
+            # Byte-Level Read
+            read_bytes = []
+            for i in range(size // 8):
+                byte_addr = addr_ast + i
+                
+                # Start with an uninitialized symbolic memory variable for THIS BYTE
+                mem_name = f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}"
+                self.mem_read_idx += 1
+                byte_ast = z3.BitVec(mem_name, 8)
+                
+                # Chain with past byte writes chronologically
+                for write_addr_ast, write_byte_ast, write_size in reversed(self.memory_writes):
+                    condition = (byte_addr == write_addr_ast)
+                    byte_ast = z3.If(condition, write_byte_ast, byte_ast)
+                    
+                read_bytes.append(byte_ast)
+                
+            # Concat in Little Endian (reverse order)
+            if len(read_bytes) == 1:
+                result_ast = read_bytes[0]
+            else:
+                result_ast = z3.Concat(*reversed(read_bytes))
+                
+            return result_ast, size
             
         return z3.BitVecVal(0, hint_size), hint_size
 
@@ -166,8 +231,7 @@ class Z3Translator:
             
         # 2. Memory Write
         if 'ptr' in op_str:
-            mem_name = op_str.replace('dword ptr ', 'Mem_').replace('qword ptr ', 'Mem_').replace('byte ptr ', 'Mem_').replace('word ptr ', 'Mem_')
-            mem_name = mem_name.replace('[', '').replace(']', '').replace(' ', '').replace('-', '_minus_').replace('+', '_plus_')
+            write_addr_ast = self._parse_memory_address(op_str)
             
             mem_size = 64
             if 'dword' in op_str: mem_size = 32
@@ -175,16 +239,17 @@ class Z3Translator:
             elif 'byte' in op_str: mem_size = 8
             else: mem_size = size
             
-            if size != mem_size:
-                if size > mem_size:
-                    native_val = z3.Extract(mem_size - 1, 0, native_val)
-                else:
-                    native_val = z3.ZeroExt(mem_size - size, native_val)
-            
-            ssa_name = self._get_new_ssa_name(mem_name)
-            new_var = z3.BitVec(ssa_name, mem_size)
-            self.solver.add(new_var == native_val)
-            self.mem_state[mem_name] = new_var
+            val = native_val
+            if val.size() > mem_size:
+                val = z3.Extract(mem_size - 1, 0, val)
+            elif val.size() < mem_size:
+                val = z3.ZeroExt(mem_size - val.size(), val)
+                
+            # Byte-Level Write
+            for i in range(mem_size // 8):
+                byte_val = z3.Extract(i * 8 + 7, i * 8, val)
+                self.memory_writes.append((write_addr_ast + i, byte_val, 8))
+            return
 
     def _match_sizes(self, dst_val: z3.BitVecRef, src_val: z3.BitVecRef) -> Tuple[z3.BitVecRef, z3.BitVecRef]:
         d_size = dst_val.size()
@@ -196,19 +261,27 @@ class Z3Translator:
         return dst_val, src_val
 
     def parse_instruction(self, instr: TraceRecord):
+        self.current_instr = instr
+        self.mem_read_idx = 0
+        self.mem_write_idx = 0
         ops = [op.strip() for op in instr.op_str.split(',')]
         
-        if instr.mnemonic == 'mov':
+        if instr.mnemonic in ['mov', 'movzx', 'movsx', 'movsxd']:
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
                 _, dst_size = self._read_operand(dst)
                 src_val, src_size = self._read_operand(src, hint_size=dst_size)
                 
-                # Match sizes
-                if src_size > dst_size:
-                    src_val = z3.Extract(dst_size - 1, 0, src_val)
-                elif src_size < dst_size:
-                    src_val = z3.ZeroExt(dst_size - src_size, src_val)
+                if instr.mnemonic == 'movzx':
+                    src_val = z3.ZeroExt(dst_size - src_size, src_val) if dst_size > src_size else src_val
+                elif instr.mnemonic in ['movsx', 'movsxd']:
+                    src_val = z3.SignExt(dst_size - src_size, src_val) if dst_size > src_size else src_val
+                else:
+                    # Normal mov match sizes
+                    if src_size > dst_size:
+                        src_val = z3.Extract(dst_size - 1, 0, src_val)
+                    elif src_size < dst_size:
+                        src_val = z3.ZeroExt(dst_size - src_size, src_val)
                     
                 self._write_operand(dst, src_val)
                 
