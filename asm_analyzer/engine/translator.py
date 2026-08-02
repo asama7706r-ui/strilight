@@ -166,7 +166,7 @@ class Z3Translator:
                 byte_ast = z3.BitVec(mem_name, 8)
                 
                 # Chain with past byte writes chronologically
-                for write_addr_ast, write_byte_ast, write_size in reversed(self.memory_writes):
+                for write_addr_ast, write_byte_ast, write_size in self.memory_writes:
                     condition = (byte_addr == write_addr_ast)
                     byte_ast = z3.If(condition, write_byte_ast, byte_ast)
                     
@@ -316,6 +316,39 @@ class Z3Translator:
                 self._write_operand(dst, res)
                 self.generate_flags(instr, instr.mnemonic, dst_val, src_val, res, dst_size)
                 
+        elif instr.mnemonic.startswith('j') and instr.mnemonic != 'jmp':
+            if hasattr(instr, 'jump_taken') and instr.jump_taken is not None:
+                # Fetch current flags
+                zf = self.flag_state.get('flag_zf', z3.BoolVal(False))
+                cf = self.flag_state.get('flag_cf', z3.BoolVal(False))
+                sf = self.flag_state.get('flag_sf', z3.BoolVal(False))
+                of = self.flag_state.get('flag_of', z3.BoolVal(False))
+                
+                cond_ast = None
+                m = instr.mnemonic
+                if m in ['je', 'jz']: cond_ast = zf
+                elif m in ['jne', 'jnz']: cond_ast = z3.Not(zf)
+                elif m in ['ja', 'jnbe']: cond_ast = z3.And(z3.Not(cf), z3.Not(zf))
+                elif m in ['jae', 'jnb', 'jnc']: cond_ast = z3.Not(cf)
+                elif m in ['jb', 'jc', 'jnae']: cond_ast = cf
+                elif m in ['jbe', 'jna']: cond_ast = z3.Or(cf, zf)
+                elif m in ['jg', 'jnle']: cond_ast = z3.And(z3.Not(zf), sf == of)
+                elif m in ['jge', 'jnl']: cond_ast = (sf == of)
+                elif m in ['jl', 'jnge']: cond_ast = (sf != of)
+                elif m in ['jle', 'jng']: cond_ast = z3.Or(zf, sf != of)
+                elif m in ['js']: cond_ast = sf
+                elif m in ['jns']: cond_ast = z3.Not(sf)
+                elif m in ['jo']: cond_ast = of
+                elif m in ['jno']: cond_ast = z3.Not(of)
+                
+                if cond_ast is not None:
+                    if instr.jump_taken:
+                        self.solver.add(cond_ast)
+                        print(f"  -> [Z3 Jump Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}: {cond_ast}")
+                    else:
+                        self.solver.add(z3.Not(cond_ast))
+                        print(f"  -> [Z3 Jump Not Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}: Not({cond_ast})")
+
         elif instr.mnemonic in ['mul', 'imul']:
             if len(ops) == 1:
                 src = ops[0]
