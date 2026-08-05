@@ -170,6 +170,19 @@ class Z3Translator:
             undef_of = z3.Bool(self._get_new_ssa_name("flag_of_undef"))
             self._write_flag("flag_of", z3.If(shift_count == 0, old_of, z3.If(shift_count == 1, new_of, undef_of)))
 
+    def _get_operand_size_hint(self, op_str: str) -> int:
+        op_str = op_str.strip()
+        if op_str in SUB_REG_MAP:
+            return SUB_REG_MAP[op_str][2]
+        if op_str in PHYSICAL_REGS:
+            return 64
+        if 'ptr' in op_str:
+            if 'qword' in op_str: return 64
+            if 'dword' in op_str: return 32
+            if 'word' in op_str: return 16
+            if 'byte' in op_str: return 8
+        return 64
+
     def _read_operand(self, op_str: str, hint_size: int = 64) -> Tuple[z3.BitVecRef, int]:
         op_str = op_str.strip()
         
@@ -194,7 +207,8 @@ class Z3Translator:
             addr_ast = self._parse_memory_address(op_str)
             
             size = 64
-            if 'dword' in op_str: size = 32
+            if 'qword' in op_str: size = 64
+            elif 'dword' in op_str: size = 32
             elif 'word' in op_str: size = 16
             elif 'byte' in op_str: size = 8
             else: size = hint_size
@@ -301,7 +315,8 @@ class Z3Translator:
             write_addr_ast = self._parse_memory_address(op_str)
             
             mem_size = 64
-            if 'dword' in op_str: mem_size = 32
+            if 'qword' in op_str: mem_size = 64
+            elif 'dword' in op_str: mem_size = 32
             elif 'word' in op_str: mem_size = 16
             elif 'byte' in op_str: mem_size = 8
             else: mem_size = size
@@ -336,8 +351,13 @@ class Z3Translator:
         if instr.mnemonic in ['mov', 'movzx', 'movsx', 'movsxd']:
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
-                _, dst_size = self._read_operand(dst)
-                src_val, src_size = self._read_operand(src, hint_size=dst_size)
+                
+                hint_dst = self._get_operand_size_hint(dst)
+                hint_src = self._get_operand_size_hint(src)
+                true_size = min(hint_dst, hint_src)
+                
+                _, dst_size = self._read_operand(dst, hint_size=true_size)
+                src_val, src_size = self._read_operand(src, hint_size=true_size)
                 
                 if instr.mnemonic == 'movzx':
                     src_val = z3.ZeroExt(dst_size - src_size, src_val) if dst_size > src_size else src_val
@@ -367,8 +387,13 @@ class Z3Translator:
         elif instr.mnemonic in ['add', 'sub', 'xor', 'and', 'or', 'cmp', 'test']:
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
-                dst_val, dst_size = self._read_operand(dst)
-                src_val, src_size = self._read_operand(src, hint_size=dst_size)
+                
+                hint_dst = self._get_operand_size_hint(dst)
+                hint_src = self._get_operand_size_hint(src)
+                true_size = min(hint_dst, hint_src)
+                
+                dst_val, dst_size = self._read_operand(dst, hint_size=true_size)
+                src_val, src_size = self._read_operand(src, hint_size=true_size)
                 
                 dst_val, src_val = self._match_sizes(dst_val, src_val)
                 
@@ -539,9 +564,67 @@ class Z3Translator:
                 res_val, _ = self._read_operand(f"{size_prefix} ptr [{hex(addr)}]", hint_size=dst_size)
                 self._write_operand(dst, res_val)
                 
+        elif instr.mnemonic == 'cdqe':
+            eax_val, _ = self._read_operand('eax')
+            rax_val = z3.SignExt(32, eax_val)
+            self._write_operand('rax', rax_val)
+            
+        elif instr.mnemonic.startswith('set'):
+            if len(ops) == 1:
+                dst = ops[0]
+                
+                # Fetch flags with a clear warning if missing (Fallback to False)
+                def get_flag_warn(name):
+                    if name not in self.flag_state:
+                        print(f"[!] Z3Translator WARNING: Flag '{name}' missing for '{instr.mnemonic}' at Tick {instr.tick}. Fallback to False (Missing info/Edge case not accounted for).")
+                        return z3.BoolVal(False)
+                    return self.flag_state[name]
+                
+                zf = get_flag_warn('flag_zf')
+                cf = get_flag_warn('flag_cf')
+                sf = get_flag_warn('flag_sf')
+                of = get_flag_warn('flag_of')
+                
+                cond_ast = None
+                m = instr.mnemonic
+                if m in ['sete', 'setz']: cond_ast = zf
+                elif m in ['setne', 'setnz']: cond_ast = z3.Not(zf)
+                elif m in ['seta', 'setnbe']: cond_ast = z3.And(z3.Not(cf), z3.Not(zf))
+                elif m in ['setae', 'setnb', 'setnc']: cond_ast = z3.Not(cf)
+                elif m in ['setb', 'setc', 'setnae']: cond_ast = cf
+                elif m in ['setbe', 'setna']: cond_ast = z3.Or(cf, zf)
+                elif m in ['setg', 'setnle']: cond_ast = z3.And(z3.Not(zf), sf == of)
+                elif m in ['setge', 'setnl']: cond_ast = (sf == of)
+                elif m in ['setl', 'setnge']: cond_ast = (sf != of)
+                elif m in ['setle', 'setng']: cond_ast = z3.Or(zf, sf != of)
+                elif m in ['sets']: cond_ast = sf
+                elif m in ['setns']: cond_ast = z3.Not(sf)
+                elif m in ['seto']: cond_ast = of
+                elif m in ['setno']: cond_ast = z3.Not(of)
+                
+                if cond_ast is not None:
+                    res_val = z3.If(cond_ast, z3.BitVecVal(1, 8), z3.BitVecVal(0, 8))
+                    self._write_operand(dst, res_val)
+                    
         elif instr.mnemonic == 'jmp':
             pass # Unconditional jumps don't change mathematical state
             
+        elif instr.mnemonic in ['xchg', 'lock xchg']:
+            if len(ops) == 2:
+                op1, op2 = ops[0], ops[1]
+                
+                size1_hint = self._get_operand_size_hint(op1)
+                size2_hint = self._get_operand_size_hint(op2)
+                true_size = min(size1_hint, size2_hint)
+                
+                val1, size1 = self._read_operand(op1, hint_size=true_size)
+                val2, size2 = self._read_operand(op2, hint_size=true_size)
+                
+                val1, val2 = self._match_sizes(val1, val2)
+                
+                self._write_operand(op1, val2)
+                self._write_operand(op2, val1)
+
         else:
             print(f"[!] Z3Translator WARNING: Unhandled instruction '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}. Mathematical state may be lost!")
 
