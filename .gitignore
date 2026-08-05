@@ -7,3 +7,5 @@ __pycache__/
 *.ilk
 .gemini/
 .vscode/
+*.log
+*.txt
