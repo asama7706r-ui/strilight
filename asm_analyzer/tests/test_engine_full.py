@@ -43,18 +43,24 @@ def main():
         symbolic_slice = slice_records
         chronological_slice = list(reversed(symbolic_slice))
         
-        # Truncate to check_key (last push rbp before target)
-        start_idx = 0
-        for i in range(len(chronological_slice) - 1, -1, -1):
-            if chronological_slice[i].mnemonic == 'push' and 'rbp' in chronological_slice[i].op_str:
-                start_idx = i
-                break
-        chronological_slice = chronological_slice[start_idx:]
-        print(f"[+] Truncated chronological slice to {len(chronological_slice)} instructions")
+        # --- FULL TRACE MODE ---
+        # We DO NOT truncate the slice. We translate the entire backward slice from the start!
+        # start_idx = 0
+        # for i in range(len(chronological_slice) - 1, -1, -1):
+        #     if chronological_slice[i].mnemonic == 'push' and 'rbp' in chronological_slice[i].op_str:
+        #         start_idx = i
+        #         break
+        # chronological_slice = chronological_slice[start_idx:]
+        # print(f"[+] Truncated chronological slice to {len(chronological_slice)} instructions")
         
         translator = Z3Translator(memory_provider=core.se.mem_read)
         key_var = z3.BitVec("key_input", 32)
-        injected = False
+        
+        # Find the exact tick for check_key prologue (the last push rbp before the target)
+        check_key_start_tick = 0
+        for record in chronological_slice:
+            if record.mnemonic == 'push' and 'rbp' in record.op_str:
+                check_key_start_tick = record.tick
         
         for record in chronological_slice:
             if record.tick == target_tick + 1:
@@ -64,12 +70,11 @@ def main():
                     
             translator.parse_instruction(record)
             
-            # Inject key at the start of check_key (first push rbp)
-            if not injected and record.mnemonic == "push" and "rbp" in record.op_str:
+            # Inject key at the check_key function start
+            if record.tick == check_key_start_tick:
                 translator.reg_state["ecx"] = key_var
                 translator.reg_state["rcx"] = z3.ZeroExt(32, key_var)
-                injected = True
-                print(f"[+] Injected symbolic key into ecx at Tick {record.tick}")
+                print(f"[+] Injected symbolic key into ecx at Tick {record.tick} (check_key prologue)")
         
         rax_final = translator.reg_state.get("rax", None)
         if rax_final is not None:

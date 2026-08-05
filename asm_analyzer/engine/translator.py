@@ -20,7 +20,8 @@ SUB_REG_MAP = {
 }
 
 class Z3Translator:
-    def __init__(self):
+    def __init__(self, memory_provider=None):
+        self.memory_provider = memory_provider
         self.solver = z3.Solver()
         self.reg_state: Dict[str, z3.BitVecRef] = {}
         self.reg_state: Dict[str, z3.BitVecRef] = {}
@@ -126,6 +127,49 @@ class Z3Translator:
             elif mnemonic in ["and", "or", "xor", "test"]:
                 self._write_flag("flag_of", z3.BoolVal(False))
 
+    def generate_shift_flags(self, instr: TraceRecord, mnemonic: str, dst_val: z3.BitVecRef, dst_size: int, shift_count: z3.BitVecRef, res_ast: z3.BitVecRef):
+        requested = instr.requested_flags
+        if not requested:
+            return
+
+        old_zf = self.flag_state.get('flag_zf', z3.BoolVal(False))
+        old_sf = self.flag_state.get('flag_sf', z3.BoolVal(False))
+        old_cf = self.flag_state.get('flag_cf', z3.BoolVal(False))
+        old_of = self.flag_state.get('flag_of', z3.BoolVal(False))
+
+        if "flag_zf" in requested:
+            new_zf = (res_ast == 0)
+            self._write_flag("flag_zf", z3.If(shift_count == 0, old_zf, new_zf))
+
+        if "flag_sf" in requested:
+            new_sf = (z3.Extract(dst_size - 1, dst_size - 1, res_ast) == 1)
+            self._write_flag("flag_sf", z3.If(shift_count == 0, old_sf, new_sf))
+
+        new_cf = None
+        if "flag_cf" in requested or "flag_of" in requested:
+            one_ast = z3.BitVecVal(1, dst_size)
+            if mnemonic == 'shl':
+                shifted_minus_one = z3.If(shift_count == 0, dst_val, dst_val << (shift_count - one_ast))
+                new_cf = (z3.LShR(shifted_minus_one, dst_size - 1) & 1) == 1
+            elif mnemonic in ['shr', 'sar']:
+                shifted_minus_one = z3.If(shift_count == 0, dst_val, z3.LShR(dst_val, shift_count - one_ast))
+                new_cf = (shifted_minus_one & 1) == 1
+
+            if "flag_cf" in requested:
+                self._write_flag("flag_cf", z3.If(shift_count == 0, old_cf, new_cf))
+
+        if "flag_of" in requested:
+            if mnemonic == 'shl':
+                msb_res = z3.Extract(dst_size - 1, dst_size - 1, res_ast) == 1
+                new_of = (msb_res != new_cf)
+            elif mnemonic == 'shr':
+                new_of = (z3.Extract(dst_size - 1, dst_size - 1, dst_val) == 1)
+            elif mnemonic == 'sar':
+                new_of = z3.BoolVal(False)
+
+            undef_of = z3.Bool(self._get_new_ssa_name("flag_of_undef"))
+            self._write_flag("flag_of", z3.If(shift_count == 0, old_of, z3.If(shift_count == 1, new_of, undef_of)))
+
     def _read_operand(self, op_str: str, hint_size: int = 64) -> Tuple[z3.BitVecRef, int]:
         op_str = op_str.strip()
         
@@ -157,13 +201,36 @@ class Z3Translator:
             
             # Byte-Level Read
             read_bytes = []
+            
+            # Smart Concretization Check
+            simplified_addr = z3.simplify(addr_ast)
+            is_concrete_addr = isinstance(simplified_addr, z3.BitVecNumRef)
+            concrete_addr_val = simplified_addr.as_long() if is_concrete_addr else 0
+            
             for i in range(size // 8):
                 byte_addr = addr_ast + i
                 
-                # Start with an uninitialized symbolic memory variable for THIS BYTE
-                mem_name = f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}"
-                self.mem_read_idx += 1
-                byte_ast = z3.BitVec(mem_name, 8)
+                byte_ast = None
+                
+                # Fetch concrete byte if address is static and provider exists
+                if is_concrete_addr and self.memory_provider:
+                    try:
+                        concrete_byte = self.memory_provider(concrete_addr_val + i, 1)
+                        if concrete_byte:
+                            byte_val = int.from_bytes(concrete_byte, byteorder='little')
+                            byte_ast = z3.BitVecVal(byte_val, 8)
+                            if i == 0: # Print only once per read operation to avoid flooding
+                                print(f"  -> [Smart Concretization] Resolved static memory at {hex(concrete_addr_val)} (Size: {size} bits)")
+                    except Exception:
+                        pass # Fallback to symbolic if read fails
+                        
+                if byte_ast is None:
+                    # Start with an uninitialized symbolic memory variable for THIS BYTE
+                    mem_name = f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}"
+                    self.mem_read_idx += 1
+                    byte_ast = z3.BitVec(mem_name, 8)
+                    if i == 0:
+                        print(f"  -> [Symbolic Memory] Falling back to unknown for symbolic address at Tick {self.current_instr.tick}")
                 
                 # Chain with past byte writes chronologically
                 for write_addr_ast, write_byte_ast, write_size in self.memory_writes:
@@ -285,6 +352,18 @@ class Z3Translator:
                     
                 self._write_operand(dst, src_val)
                 
+        elif instr.mnemonic == 'lea':
+            if len(ops) == 2:
+                dst, src = ops[0], ops[1]
+                addr_ast = self._parse_memory_address(src)
+                _, dst_size = self._read_operand(dst)
+                
+                # Z3 addresses are 64-bit, truncate if destination is smaller (e.g. lea eax, [...])
+                if dst_size < 64:
+                    addr_ast = z3.Extract(dst_size - 1, 0, addr_ast)
+                    
+                self._write_operand(dst, addr_ast)
+                
         elif instr.mnemonic in ['add', 'sub', 'xor', 'and', 'or', 'cmp', 'test']:
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
@@ -315,6 +394,26 @@ class Z3Translator:
                 
                 self._write_operand(dst, res)
                 self.generate_flags(instr, instr.mnemonic, dst_val, src_val, res, dst_size)
+                
+        elif instr.mnemonic in ['shl', 'shr', 'sar']:
+            if len(ops) == 2:
+                dst, src = ops[0], ops[1]
+                dst_val, dst_size = self._read_operand(dst)
+                src_val, src_size = self._read_operand(src, hint_size=dst_size)
+                
+                dst_val, src_val = self._match_sizes(dst_val, src_val)
+                mask_val = 0x3F if dst_size == 64 else 0x1F
+                shift_count = src_val & z3.BitVecVal(mask_val, dst_size)
+                
+                if instr.mnemonic == 'shl':
+                    res = dst_val << shift_count
+                elif instr.mnemonic == 'shr':
+                    res = z3.LShR(dst_val, shift_count)
+                elif instr.mnemonic == 'sar':
+                    res = dst_val >> shift_count
+                    
+                self._write_operand(dst, res)
+                self.generate_shift_flags(instr, instr.mnemonic, dst_val, dst_size, shift_count, res)
                 
         elif instr.mnemonic.startswith('j') and instr.mnemonic != 'jmp':
             if hasattr(instr, 'jump_taken') and instr.jump_taken is not None:
@@ -411,15 +510,51 @@ class Z3Translator:
                 # Truncate back to dst_size
                 final_res = z3.Extract(dst_size - 1, 0, res)
                 self._write_operand(dst, final_res)
+                
+        elif instr.mnemonic == 'push':
+            if len(ops) == 1 and instr.mem_write:
+                src = ops[0]
+                addr = instr.mem_write[0]
+                src_val, src_size = self._read_operand(src)
+                
+                size_prefix = "qword"
+                if src_size == 32: size_prefix = "dword"
+                elif src_size == 16: size_prefix = "word"
+                elif src_size == 8: size_prefix = "byte"
+                
+                self._write_operand(f"{size_prefix} ptr [{hex(addr)}]", src_val)
+                
+        elif instr.mnemonic == 'pop':
+            if len(ops) == 1 and instr.mem_read:
+                dst = ops[0]
+                addr = instr.mem_read[0]
+                # Determine size from dst
+                _, dst_size = self._read_operand(dst)
+                
+                size_prefix = "qword"
+                if dst_size == 32: size_prefix = "dword"
+                elif dst_size == 16: size_prefix = "word"
+                elif dst_size == 8: size_prefix = "byte"
+                
+                res_val, _ = self._read_operand(f"{size_prefix} ptr [{hex(addr)}]", hint_size=dst_size)
+                self._write_operand(dst, res_val)
+                
+        elif instr.mnemonic == 'jmp':
+            pass # Unconditional jumps don't change mathematical state
+            
+        else:
+            print(f"[!] Z3Translator WARNING: Unhandled instruction '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}. Mathematical state may be lost!")
 
     def translate_slice(self, slice_records: List[TraceRecord]):
         print("[+] Starting Z3 Translation Phase (Native Width Model)...")
         chronological_slice = list(reversed(slice_records))
         
         for instr in chronological_slice:
-            if instr.mnemonic in ['push', 'pop', 'call']:
+            if instr.mnemonic in ['call']:
+                print(f"  -> [Ignored] Skipping call: '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}")
                 continue
             if instr.mnemonic in ['sub', 'add'] and 'rsp' in instr.op_str:
+                print(f"  -> [Ignored] Skipping stack pointer math: '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}")
                 continue
             self.parse_instruction(instr)
 

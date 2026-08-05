@@ -35,7 +35,7 @@ def setup_hooks(core_instance):
         core_instance.current_mem_writes.clear()
         
         for i in md.disasm(buf, address):
-            record = TraceRecord(core_instance.tick_counter, address, i.mnemonic, i.op_str)
+            record = TraceRecord(core_instance.tick_counter, address, i.size, i.mnemonic, i.op_str)
             
             reads = []
             writes = []

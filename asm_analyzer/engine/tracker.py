@@ -1,9 +1,10 @@
 from typing import List, Dict, Any, Optional
 
 class TraceRecord:
-    def __init__(self, tick: int, address: int, mnemonic: str, op_str: str, thread_id: int = 0):
+    def __init__(self, tick: int, address: int, size: int, mnemonic: str, op_str: str, thread_id: int = 0):
         self.tick = tick
         self.address = address
+        self.size = size
         self.mnemonic = mnemonic
         self.op_str = op_str
         self.thread_id = thread_id
