@@ -609,6 +609,38 @@ class Z3Translator:
         elif instr.mnemonic == 'jmp':
             pass # Unconditional jumps don't change mathematical state
             
+        elif instr.mnemonic in ['cmpxchg', 'lock cmpxchg']:
+            if len(ops) == 2:
+                dst, src = ops[0], ops[1]
+                
+                hint_dst = self._get_operand_size_hint(dst)
+                hint_src = self._get_operand_size_hint(src)
+                true_size = min(hint_dst, hint_src)
+                
+                dst_val, dst_size = self._read_operand(dst, hint_size=true_size)
+                src_val, src_size = self._read_operand(src, hint_size=true_size)
+                
+                acc_reg = 'al'
+                if dst_size == 16: acc_reg = 'ax'
+                elif dst_size == 32: acc_reg = 'eax'
+                elif dst_size == 64: acc_reg = 'rax'
+                
+                acc_val, _ = self._read_operand(acc_reg)
+                
+                dst_val, src_val = self._match_sizes(dst_val, src_val)
+                acc_val, dst_val = self._match_sizes(acc_val, dst_val)
+                
+                cmp_res = acc_val - dst_val
+                self.generate_flags(instr, 'cmp', acc_val, dst_val, cmp_res, dst_size)
+                
+                is_eq = (acc_val == dst_val)
+                
+                new_dst_val = z3.If(is_eq, src_val, dst_val)
+                new_acc_val = z3.If(is_eq, acc_val, dst_val)
+                
+                self._write_operand(dst, new_dst_val)
+                self._write_operand(acc_reg, new_acc_val)
+
         elif instr.mnemonic in ['xchg', 'lock xchg']:
             if len(ops) == 2:
                 op1, op2 = ops[0], ops[1]

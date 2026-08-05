@@ -197,6 +197,12 @@ class BackwardSliceTracker:
                                 continue # Already spawned as a sub-slice descendant
                             targets_to_track.add(reg_in)
                             print(f"  -> Found Ancestor Reg '{reg_in}' at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
+                            
+                        # INJECT SETCC FLAGS
+                        if hasattr(self.ctx, 'SET_FLAGS') and record.mnemonic in self.ctx.SET_FLAGS:
+                            for f in self.ctx.SET_FLAGS[record.mnemonic]:
+                                targets_to_track.add(f)
+                                print(f"  -> Found Ancestor Flag '{f}' at Tick {record.tick} via ({record.mnemonic})")
                         
                         if record.mem_read:
                             read_size = self.ctx._calculate_memory_access_size(record)
@@ -287,8 +293,13 @@ class ForwardSliceTracker:
             # For flags, we see if it's a conditional jump and we track the required flags
             reads_tracked_flag = False
             tracked_flags = [t for t in targets_to_track if isinstance(t, str) and t.startswith("flag_")]
-            if tracked_flags and record.mnemonic in self.ctx.JUMP_FLAGS:
-                required_flags = self.ctx.JUMP_FLAGS[record.mnemonic]
+            if tracked_flags:
+                required_flags = []
+                if record.mnemonic in self.ctx.JUMP_FLAGS:
+                    required_flags.extend(self.ctx.JUMP_FLAGS[record.mnemonic])
+                if hasattr(self.ctx, 'SET_FLAGS') and record.mnemonic in self.ctx.SET_FLAGS:
+                    required_flags.extend(self.ctx.SET_FLAGS[record.mnemonic])
+                
                 matched_flags = [f for f in tracked_flags if f in required_flags]
                 if matched_flags:
                     reads_tracked_flag = True
@@ -381,8 +392,22 @@ class ForwardSliceTracker:
 
 
 class Tracker:
-    MODIFIES_ALL_FLAGS = {"add", "sub", "cmp", "test", "and", "or", "xor", "shl", "shr"}
+    MODIFIES_ALL_FLAGS = {"add", "sub", "cmp", "test", "and", "or", "xor", "shl", "shr", "cmpxchg", "lock cmpxchg"}
     MODIFIES_ZSO_ONLY = {"inc", "dec"}
+    SET_FLAGS = {
+        "sete": ["flag_zf"], "setz": ["flag_zf"],
+        "setne": ["flag_zf"], "setnz": ["flag_zf"],
+        "seta": ["flag_cf", "flag_zf"], "setnbe": ["flag_cf", "flag_zf"],
+        "setae": ["flag_cf"], "setnb": ["flag_cf"], "setnc": ["flag_cf"],
+        "setb": ["flag_cf"], "setnae": ["flag_cf"], "setc": ["flag_cf"],
+        "setbe": ["flag_cf", "flag_zf"], "setna": ["flag_cf", "flag_zf"],
+        "setg": ["flag_zf", "flag_sf", "flag_of"], "setnle": ["flag_zf", "flag_sf", "flag_of"],
+        "setge": ["flag_sf", "flag_of"], "setnl": ["flag_sf", "flag_of"],
+        "setl": ["flag_sf", "flag_of"], "setnge": ["flag_sf", "flag_of"],
+        "setle": ["flag_zf", "flag_sf", "flag_of"], "setng": ["flag_zf", "flag_sf", "flag_of"],
+        "sets": ["flag_sf"], "setns": ["flag_sf"],
+        "seto": ["flag_of"], "setno": ["flag_of"]
+    }
     JUMP_FLAGS = {
         "je": ["flag_zf"], "jz": ["flag_zf"],
         "jne": ["flag_zf"], "jnz": ["flag_zf"],
