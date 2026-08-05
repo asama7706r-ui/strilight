@@ -1,5 +1,4 @@
 import sys
-import unittest.mock
 from unittest.mock import MagicMock
 
 # Mock capstone
@@ -64,12 +63,20 @@ def test_hook_code():
     mock_insn.mnemonic = "nop"
     mock_insn.op_str = ""
     mock_insn.size = 1
-    mock_insn.regs_read = []
-    mock_insn.regs_write = []
+    
+    # Mock details
+    mock_detail = MagicMock()
+    mock_detail.regs_read = []
+    mock_detail.regs_write = []
+    
+    # Needs to match capstone struct for operands iteration
     mock_insn.operands = []
     
-    with unittest.mock.patch("asm_analyzer.engine.hooks.md.disasm", return_value=[mock_insn]):
-        hook_code_func(MagicMock(), 0x1500, 1)
+    mock_cs_instance.disasm.return_value = [mock_insn]
+    
+    mock_emu = MagicMock()
+    mock_emu.mem_read.return_value = b"\x90"
+    hook_code_func(mock_emu, 0x1500, 1)
     
     assert core.tick_counter == 1
     assert core.tracker.add_trace.call_count == 1
