@@ -630,16 +630,20 @@ class Z3Translator:
                 dst_val, src_val = self._match_sizes(dst_val, src_val)
                 acc_val, dst_val = self._match_sizes(acc_val, dst_val)
                 
-                cmp_res = acc_val - dst_val
-                self.generate_flags(instr, 'cmp', acc_val, dst_val, cmp_res, dst_size)
+                # Deduce path taken from dynamic trace
+                is_eq = False
+                if 'ptr' in dst:
+                    is_eq = len(instr.mem_write) > 0
                 
-                is_eq = (acc_val == dst_val)
-                
-                new_dst_val = z3.If(is_eq, src_val, dst_val)
-                new_acc_val = z3.If(is_eq, acc_val, dst_val)
-                
-                self._write_operand(dst, new_dst_val)
-                self._write_operand(acc_reg, new_acc_val)
+                # Force the solver to follow the actual execution path
+                if is_eq:
+                    self.solver.add(acc_val == dst_val)
+                    self._write_operand(dst, src_val)
+                    self._write_flag('flag_zf', z3.BoolVal(True))
+                else:
+                    self.solver.add(acc_val != dst_val)
+                    self._write_operand(acc_reg, dst_val)
+                    self._write_flag('flag_zf', z3.BoolVal(False))
 
         elif instr.mnemonic in ['xchg', 'lock xchg']:
             if len(ops) == 2:
