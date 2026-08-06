@@ -93,7 +93,8 @@ class BackwardSliceTracker:
                         continue
 
                 # Check if this instruction writes to any register OR memory address we are tracking
-                writes_to_target_reg = any(r in targets_to_track for r in record.regs_write if not r.startswith("flag_"))
+                tracked_bases = {self.ctx.REG_TO_BASE.get(t, t) for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")}
+                writes_to_target_reg = any(self.ctx.REG_TO_BASE.get(r, r) in tracked_bases for r in record.regs_write if not r.startswith("flag_"))
                 
                 tracked_mem = [t for t in targets_to_track if isinstance(t, int)]
                 writes_to_target_mem = False  # Absolute Must-Alias
@@ -179,8 +180,10 @@ class BackwardSliceTracker:
                     # KILL PHASE
                     if writes_to_target_reg or writes_to_tracked_flag:
                         for reg_out in record.regs_write:
-                            if reg_out in targets_to_track and not reg_out.startswith("flag_"):
-                                targets_to_track.remove(reg_out)
+                            base_out = self.ctx.REG_TO_BASE.get(reg_out, reg_out)
+                            to_remove = [t for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_") and self.ctx.REG_TO_BASE.get(t, t) == base_out]
+                            for t in to_remove:
+                                targets_to_track.remove(t)
                         for f in flags_to_kill:
                             if f in targets_to_track:
                                 targets_to_track.remove(f)
@@ -193,7 +196,8 @@ class BackwardSliceTracker:
                     # GEN PHASE
                     if not is_taint_breaker:
                         for reg_in in record.regs_read:
-                            if may_alias_triggered and reg_in in pointer_regs_used:
+                            base_in = self.ctx.REG_TO_BASE.get(reg_in, reg_in)
+                            if may_alias_triggered and base_in in [self.ctx.REG_TO_BASE.get(p, p) for p in pointer_regs_used]:
                                 continue # Already spawned as a sub-slice descendant
                             targets_to_track.add(reg_in)
                             print(f"  -> Found Ancestor Reg '{reg_in}' at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
@@ -263,9 +267,11 @@ class ForwardSliceTracker:
             if is_taint_breaker and record.mnemonic != 'call':
                 killed_regs = []
                 for reg_out in record.regs_write:
-                    if reg_out in targets_to_track and not reg_out.startswith("flag_"):
-                        targets_to_track.remove(reg_out)
-                        killed_regs.append(reg_out)
+                    base_out = self.ctx.REG_TO_BASE.get(reg_out, reg_out)
+                    to_remove = [t for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_") and self.ctx.REG_TO_BASE.get(t, t) == base_out]
+                    for t in to_remove:
+                        targets_to_track.remove(t)
+                        killed_regs.append(t)
                 
                 # Check mem kill
                 if record.mem_write:
@@ -287,7 +293,8 @@ class ForwardSliceTracker:
                 continue
 
             # --- 2. Gen Phase (Taint Propagation) ---
-            reads_from_target_reg = any(r in targets_to_track for r in record.regs_read if not r.startswith("flag_"))
+            tracked_bases = {self.ctx.REG_TO_BASE.get(t, t) for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")}
+            reads_from_target_reg = any(self.ctx.REG_TO_BASE.get(r, r) in tracked_bases for r in record.regs_read if not r.startswith("flag_"))
             reads_from_target_mem = any(m in targets_to_track for m in record.mem_read)
             
             # For flags, we see if it's a conditional jump and we track the required flags
@@ -337,7 +344,8 @@ class ForwardSliceTracker:
                 
                 # Propagate taint to output registers
                 for reg_out in record.regs_write:
-                    if reg_out not in targets_to_track and not reg_out.startswith("flag_"):
+                    base_out = self.ctx.REG_TO_BASE.get(reg_out, reg_out)
+                    if not any(self.ctx.REG_TO_BASE.get(t, t) == base_out for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")):
                         targets_to_track.add(reg_out)
                         print(f"  -> [Forward Taint Gen] Tainted Register '{reg_out}' at Tick {record.tick}")
                 
@@ -434,6 +442,30 @@ class Tracker:
         "sil": 1, "dil": 1, "bpl": 1, "spl": 1,
         "r8b": 1, "r9b": 1, "r10b": 1, "r11b": 1, "r12b": 1, "r13b": 1, "r14b": 1, "r15b": 1,
     }
+
+    REGISTER_HIERARCHY = {
+        "rax": {"rax", "eax", "ax", "al", "ah"},
+        "rbx": {"rbx", "ebx", "bx", "bl", "bh"},
+        "rcx": {"rcx", "ecx", "cx", "cl", "ch"},
+        "rdx": {"rdx", "edx", "dx", "dl", "dh"},
+        "rsi": {"rsi", "esi", "si", "sil"},
+        "rdi": {"rdi", "edi", "di", "dil"},
+        "rbp": {"rbp", "ebp", "bp", "bpl"},
+        "rsp": {"rsp", "esp", "sp", "spl"},
+        "r8": {"r8", "r8d", "r8w", "r8b"},
+        "r9": {"r9", "r9d", "r9w", "r9b"},
+        "r10": {"r10", "r10d", "r10w", "r10b"},
+        "r11": {"r11", "r11d", "r11w", "r11b"},
+        "r12": {"r12", "r12d", "r12w", "r12b"},
+        "r13": {"r13", "r13d", "r13w", "r13b"},
+        "r14": {"r14", "r14d", "r14w", "r14b"},
+        "r15": {"r15", "r15d", "r15w", "r15b"},
+    }
+
+    REG_TO_BASE = {}
+    for base, subs in REGISTER_HIERARCHY.items():
+        for sub in subs:
+            REG_TO_BASE[sub] = base
 
     def _calculate_memory_access_size(self, record: TraceRecord) -> int:
         write_size = 1 # Default

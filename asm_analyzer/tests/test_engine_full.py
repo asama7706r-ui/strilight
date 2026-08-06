@@ -56,13 +56,23 @@ def main():
         translator = Z3Translator(memory_provider=core.se.mem_read)
         key_var = z3.BitVec("key_input", 32)
         
-        # Find the exact tick for check_key prologue (the last push rbp before the target)
+        # مسح الافتراضات السابقة
         check_key_start_tick = 0
         for record in chronological_slice:
             if record.mnemonic == 'push' and 'rbp' in record.op_str:
                 check_key_start_tick = record.tick
-        
+
         for record in chronological_slice:
+            # 1. إجبار تعليمة الهدف (cmp) على توليد الأعلام لأن السلايسر تجاهلها
+            if record.tick == target_tick:
+                record.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
+            
+            # 2. تنظيف الماضي (مسح قيود المسار للقفزات العشوائية)
+            if record.mnemonic.startswith('j') and record.mnemonic != 'jmp':
+                if record.tick != target_tick + 1:
+                    record.jump_taken = None 
+
+            # 3. قلب القفزة الهدف لفرض الفوز
             if record.tick == target_tick + 1:
                 if record.jump_taken is not None:
                     record.jump_taken = not record.jump_taken
@@ -70,7 +80,7 @@ def main():
                     
             translator.parse_instruction(record)
             
-            # Inject key at the check_key function start
+            # 4. حقن المفتاح الرمزي
             if record.tick == check_key_start_tick:
                 translator.reg_state["ecx"] = key_var
                 translator.reg_state["rcx"] = z3.ZeroExt(32, key_var)
@@ -80,7 +90,7 @@ def main():
         if rax_final is not None:
             print("[+] Adding Goal Constraint: rax == 0xDE1770EF")
             translator.solver.add(rax_final == 0xDE1770EF)
-        
+
         print("\n[*] Z3 Solving...")
         if translator.solver.check() == z3.sat:
             model = translator.solver.model()

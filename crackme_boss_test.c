@@ -54,7 +54,7 @@ int get_input() {
 }
 
 int main(int argc, char **argv) {
-  int key = 191039365;
+  int key = 235014021;
 
   if (check_key(key)) {
     printf("ACCESS GRANTED - YOU DEFEATED THE BOSS!\n");

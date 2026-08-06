@@ -13,6 +13,7 @@ def get_value(translator, reg):
         elif reg.endswith('ptr') and ' ' in reg:
              pass # Will be handled by regular get
     if val is None:
+        assert False, f'Expected a value for {reg}, got None. Bug in architect code?'
         return None
 
     translator.solver.check()
@@ -26,6 +27,7 @@ def get_value(translator, reg):
 def get_flag(translator, flag_name):
     flag = translator.flag_state.get(flag_name)
     if flag is None:
+        assert False, f"Expected a value for {flag_name}, got None. Bug in architect code?"
         return None
     translator.solver.check()
     m = translator.solver.model()
@@ -138,7 +140,7 @@ def test_translator_push_pop():
     pop_rec2 = TraceRecord(tick=4, address=0x1007, mnemonic="pop", op_str="rbx", size=1)
     pop_rec2.mem_read = [0x5000]
     
-    translator.memory_provider = lambda addr, size: b"\x78\x56\x34\x12\x00\x00\x00\x00"[:size]
+    translator.memory_provider = lambda addr, size: b"\x78\x56\x34\x12\x00\x00\x00\x00"[addr-0x5000:addr-0x5000+size]
     translator.parse_instruction(pop_rec2)
     
     # By reading 64-bit value, it gets 0x12345678.
@@ -147,7 +149,7 @@ def test_translator_push_pop():
     # The actual implementation of pop without memory_provider would map to symbolic read, but with provider it resolves.
     # However we discovered a bug with "qword ptr" in pop reading when hint_size defaults to 64 vs 16.
     # We will just verify it's working without crashing or getting 16-bit by default.
-    assert val is not None
+    assert val == 0x12345678
 
 
 def test_translator_unhandled():

@@ -24,7 +24,6 @@ class Z3Translator:
         self.memory_provider = memory_provider
         self.solver = z3.Solver()
         self.reg_state: Dict[str, z3.BitVecRef] = {}
-        self.reg_state: Dict[str, z3.BitVecRef] = {}
         self.flag_state: Dict[str, z3.BoolRef] = {}
         self.latest_versions: Dict[str, int] = {}
         self.memory_writes: List[Tuple[z3.BitVecRef, z3.BitVecRef, int]] = []
@@ -87,6 +86,11 @@ class Z3Translator:
             self.reg_state[phys_name] = z3.BitVec(ssa_name, 64)
             self.latest_versions[phys_name] = 0
         return self.reg_state[phys_name]
+
+    def _clobber_register(self, phys_name: str):
+        ssa_name = self._get_new_ssa_name(phys_name)
+        new_var = z3.BitVec(ssa_name, 64)
+        self.reg_state[phys_name] = new_var
 
     def _write_flag(self, flag_name: str, bool_val):
         ssa_name = self._get_new_ssa_name(flag_name)
@@ -537,32 +541,43 @@ class Z3Translator:
                 self._write_operand(dst, final_res)
                 
         elif instr.mnemonic == 'push':
-            if len(ops) == 1 and instr.mem_write:
+            if len(ops) == 1:
                 src = ops[0]
-                addr = instr.mem_write[0]
                 src_val, src_size = self._read_operand(src)
+                rsp_val, _ = self._read_operand('rsp')
                 
-                size_prefix = "qword"
-                if src_size == 32: size_prefix = "dword"
-                elif src_size == 16: size_prefix = "word"
-                elif src_size == 8: size_prefix = "byte"
+                rsp_new = rsp_val - (src_size // 8)
+                self._write_operand('rsp', rsp_new)
                 
-                self._write_operand(f"{size_prefix} ptr [{hex(addr)}]", src_val)
+                # Byte-Level Write directly to symbolic rsp_new
+                for i in range(src_size // 8):
+                    byte_val = z3.Extract(i * 8 + 7, i * 8, src_val)
+                    self.memory_writes.append((rsp_new + i, byte_val, 8))
                 
         elif instr.mnemonic == 'pop':
-            if len(ops) == 1 and instr.mem_read:
+            if len(ops) == 1:
                 dst = ops[0]
-                addr = instr.mem_read[0]
-                # Determine size from dst
                 _, dst_size = self._read_operand(dst)
+                rsp_val, _ = self._read_operand('rsp')
                 
-                size_prefix = "qword"
-                if dst_size == 32: size_prefix = "dword"
-                elif dst_size == 16: size_prefix = "word"
-                elif dst_size == 8: size_prefix = "byte"
-                
-                res_val, _ = self._read_operand(f"{size_prefix} ptr [{hex(addr)}]", hint_size=dst_size)
+                # Read from memory symbolically at rsp_val
+                read_bytes = []
+                for i in range(dst_size // 8):
+                    byte_addr = rsp_val + i
+                    byte_ast = z3.BitVec(f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}", 8)
+                    self.mem_read_idx += 1
+                    for write_addr_ast, write_byte_ast, write_size in self.memory_writes:
+                        byte_ast = z3.If(byte_addr == write_addr_ast, write_byte_ast, byte_ast)
+                    read_bytes.append(byte_ast)
+                    
+                if len(read_bytes) == 1:
+                    res_val = read_bytes[0]
+                else:
+                    res_val = z3.Concat(*reversed(read_bytes))
+                    
                 self._write_operand(dst, res_val)
+                rsp_new = rsp_val + (dst_size // 8)
+                self._write_operand('rsp', rsp_new)
                 
         elif instr.mnemonic == 'cdqe':
             eax_val, _ = self._read_operand('eax')
@@ -608,6 +623,38 @@ class Z3Translator:
                     
         elif instr.mnemonic == 'jmp':
             pass # Unconditional jumps don't change mathematical state
+            
+        elif instr.mnemonic == 'call':
+            rsp_val, _ = self._read_operand('rsp')
+            rsp_new = rsp_val - 8
+            self._write_operand('rsp', rsp_new)
+            
+            rip_val = z3.BitVecVal(instr.address + instr.size, 64)
+            for i in range(8):
+                byte_val = z3.Extract(i * 8 + 7, i * 8, rip_val)
+                self.memory_writes.append((rsp_new + i, byte_val, 8))
+                
+            is_external = False
+            if 'rax' in instr.regs_write:
+                is_external = True
+                
+            if is_external:
+                print(f"  -> [Clobber] Call to external API at Tick {instr.tick}. Clobbering volatile registers.")
+                for r in ['rax', 'rcx', 'rdx', 'r8', 'r9', 'r10', 'r11']:
+                    self._clobber_register(r)
+
+        elif instr.mnemonic == 'ret':
+            rsp_val, _ = self._read_operand('rsp')
+            rsp_new = rsp_val + 8
+            
+            if len(ops) == 1 and ops[0]:
+                imm = ops[0]
+                if imm.startswith('0x'):
+                    rsp_new = rsp_new + int(imm, 16)
+                elif imm.isdigit():
+                    rsp_new = rsp_new + int(imm)
+                    
+            self._write_operand('rsp', rsp_new)
             
         elif instr.mnemonic in ['cmpxchg', 'lock cmpxchg']:
             if len(ops) == 2:
@@ -668,14 +715,9 @@ class Z3Translator:
         print("[+] Starting Z3 Translation Phase (Native Width Model)...")
         chronological_slice = list(reversed(slice_records))
         
-        for instr in chronological_slice:
-            if instr.mnemonic in ['call']:
-                print(f"  -> [Ignored] Skipping call: '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}")
-                continue
-            if instr.mnemonic in ['sub', 'add'] and 'rsp' in instr.op_str:
-                print(f"  -> [Ignored] Skipping stack pointer math: '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}")
-                continue
-            self.parse_instruction(instr)
+        for i, instr in enumerate(chronological_slice):
+            next_instr = chronological_slice[i+1] if i + 1 < len(chronological_slice) else None
+            self.parse_instruction(instr, next_instr)
 
         print("[+] Z3 Translation Complete. Assertions:")
         for assertion in self.solver.assertions():
