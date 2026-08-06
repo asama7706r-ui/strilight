@@ -187,35 +187,44 @@ class Z3Translator:
             if 'byte' in op_str: return 8
         return 64
 
-    def _read_operand(self, op_str: str, hint_size: int = 64) -> Tuple[z3.BitVecRef, int]:
-        op_str = op_str.strip()
+    def _read_operand(self, op_dict: dict, hint_size: int = 64) -> Tuple[z3.BitVecRef, int]:
+        op_type = op_dict['type']
         
         # 1. Immediate value
-        if op_str.startswith('0x'):
-            return z3.BitVecVal(int(op_str, 16), hint_size), hint_size
-        elif op_str.isdigit() or (op_str.startswith('-') and op_str[1:].isdigit()):
-            return z3.BitVecVal(int(op_str), hint_size), hint_size
+        if op_type == 'imm':
+            size = op_dict['size'] * 8 if op_dict.get('size') else hint_size
+            # Handle negative Z3 bitvec values properly
+            val = op_dict['value']
+            if val < 0:
+                val = (1 << size) + val
+            return z3.BitVecVal(val, size), size
             
         # 2. Register
-        if op_str in SUB_REG_MAP:
-            phys_reg, offset, size = SUB_REG_MAP[op_str]
-            phys_val = self._get_phys_reg(phys_reg)
-            extracted = z3.Extract(offset + size - 1, offset, phys_val)
-            return extracted, size
-            
-        if op_str in PHYSICAL_REGS:
-            return self._get_phys_reg(op_str), 64
-            
+        if op_type == 'reg':
+            op_str = op_dict['value']
+            if op_str in SUB_REG_MAP:
+                phys_reg, offset, size = SUB_REG_MAP[op_str]
+                phys_val = self._get_phys_reg(phys_reg)
+                extracted = z3.Extract(offset + size - 1, offset, phys_val)
+                return extracted, size
+                
+            if op_str in PHYSICAL_REGS:
+                return self._get_phys_reg(op_str), 64
+                
         # 3. Memory
-        if 'ptr' in op_str:
-            addr_ast = self._parse_memory_address(op_str)
+        if op_type == 'mem':
+            addr_ast = z3.BitVecVal(op_dict['disp'], 64)
+            if op_dict['base']:
+                base_ast, _ = self._read_operand({'type': 'reg', 'value': op_dict['base']}, hint_size=64)
+                if base_ast.size() != 64: base_ast = z3.ZeroExt(64 - base_ast.size(), base_ast)
+                addr_ast = addr_ast + base_ast
+            if op_dict['index']:
+                index_ast, _ = self._read_operand({'type': 'reg', 'value': op_dict['index']}, hint_size=64)
+                if index_ast.size() != 64: index_ast = z3.ZeroExt(64 - index_ast.size(), index_ast)
+                addr_ast = addr_ast + (index_ast * op_dict['scale'])
             
-            size = 64
-            if 'qword' in op_str: size = 64
-            elif 'dword' in op_str: size = 32
-            elif 'word' in op_str: size = 16
-            elif 'byte' in op_str: size = 8
-            else: size = hint_size
+            size = op_dict['size'] * 8
+            if size == 0: size = hint_size
             
             # Byte-Level Read
             read_bytes = []
@@ -267,63 +276,69 @@ class Z3Translator:
             
         return z3.BitVecVal(0, hint_size), hint_size
 
-    def _write_operand(self, op_str: str, native_val: z3.BitVecRef):
-        op_str = op_str.strip()
+    def _write_operand(self, op_dict: dict, native_val: z3.BitVecRef):
+        op_type = op_dict['type']
         size = native_val.size()
         
         # 1. Register Write
-        if op_str in SUB_REG_MAP:
-            phys_reg, offset, reg_size = SUB_REG_MAP[op_str]
-            
-            # Sanity check: force size match
-            if size != reg_size:
-                if size > reg_size:
-                    native_val = z3.Extract(reg_size - 1, 0, native_val)
-                else:
-                    native_val = z3.ZeroExt(reg_size - size, native_val)
-                    
-            old_phys_val = self._get_phys_reg(phys_reg)
-            
-            if reg_size == 32 and offset == 0:
-                new_phys_val = z3.ZeroExt(32, native_val)
-            else:
-                parts = []
-                if offset + reg_size < 64:
-                    parts.append(z3.Extract(63, offset + reg_size, old_phys_val))
-                parts.append(native_val)
-                if offset > 0:
-                    parts.append(z3.Extract(offset - 1, 0, old_phys_val))
+        if op_type == 'reg':
+            op_str = op_dict['value']
+            if op_str in SUB_REG_MAP:
+                phys_reg, offset, reg_size = SUB_REG_MAP[op_str]
                 
-                if len(parts) == 1:
-                    new_phys_val = parts[0]
+                # Sanity check: force size match
+                if size != reg_size:
+                    if size > reg_size:
+                        native_val = z3.Extract(reg_size - 1, 0, native_val)
+                    else:
+                        native_val = z3.ZeroExt(reg_size - size, native_val)
+                        
+                old_phys_val = self._get_phys_reg(phys_reg)
+                
+                if reg_size == 32 and offset == 0:
+                    new_phys_val = z3.ZeroExt(32, native_val)
                 else:
-                    new_phys_val = z3.Concat(*parts)
+                    parts = []
+                    if offset + reg_size < 64:
+                        parts.append(z3.Extract(63, offset + reg_size, old_phys_val))
+                    parts.append(native_val)
+                    if offset > 0:
+                        parts.append(z3.Extract(offset - 1, 0, old_phys_val))
                     
-            ssa_name = self._get_new_ssa_name(phys_reg)
-            new_var = z3.BitVec(ssa_name, 64)
-            self.solver.add(new_var == new_phys_val)
-            self.reg_state[phys_reg] = new_var
-            return
-            
-        if op_str in PHYSICAL_REGS:
-            if size != 64:
-                native_val = z3.ZeroExt(64 - size, native_val)
-            ssa_name = self._get_new_ssa_name(op_str)
-            new_var = z3.BitVec(ssa_name, 64)
-            self.solver.add(new_var == native_val)
-            self.reg_state[op_str] = new_var
-            return
-            
+                    if len(parts) == 1:
+                        new_phys_val = parts[0]
+                    else:
+                        new_phys_val = z3.Concat(*parts)
+                        
+                ssa_name = self._get_new_ssa_name(phys_reg)
+                new_var = z3.BitVec(ssa_name, 64)
+                self.solver.add(new_var == new_phys_val)
+                self.reg_state[phys_reg] = new_var
+                return
+                
+            if op_str in PHYSICAL_REGS:
+                if size != 64:
+                    native_val = z3.ZeroExt(64 - size, native_val)
+                ssa_name = self._get_new_ssa_name(op_str)
+                new_var = z3.BitVec(ssa_name, 64)
+                self.solver.add(new_var == native_val)
+                self.reg_state[op_str] = new_var
+                return
+                
         # 2. Memory Write
-        if 'ptr' in op_str:
-            write_addr_ast = self._parse_memory_address(op_str)
+        if op_type == 'mem':
+            write_addr_ast = z3.BitVecVal(op_dict['disp'], 64)
+            if op_dict['base']:
+                base_ast, _ = self._read_operand({'type': 'reg', 'value': op_dict['base']}, hint_size=64)
+                if base_ast.size() != 64: base_ast = z3.ZeroExt(64 - base_ast.size(), base_ast)
+                write_addr_ast = write_addr_ast + base_ast
+            if op_dict['index']:
+                index_ast, _ = self._read_operand({'type': 'reg', 'value': op_dict['index']}, hint_size=64)
+                if index_ast.size() != 64: index_ast = z3.ZeroExt(64 - index_ast.size(), index_ast)
+                write_addr_ast = write_addr_ast + (index_ast * op_dict['scale'])
             
-            mem_size = 64
-            if 'qword' in op_str: mem_size = 64
-            elif 'dword' in op_str: mem_size = 32
-            elif 'word' in op_str: mem_size = 16
-            elif 'byte' in op_str: mem_size = 8
-            else: mem_size = size
+            mem_size = op_dict['size'] * 8
+            if mem_size == 0: mem_size = size
             
             val = native_val
             if val.size() > mem_size:
@@ -350,14 +365,14 @@ class Z3Translator:
         self.current_instr = instr
         self.mem_read_idx = 0
         self.mem_write_idx = 0
-        ops = [op.strip() for op in instr.op_str.split(',')]
+        ops = instr.operands
         
         if instr.mnemonic in ['mov', 'movzx', 'movsx', 'movsxd']:
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
                 
-                hint_dst = self._get_operand_size_hint(dst)
-                hint_src = self._get_operand_size_hint(src)
+                hint_dst = dst['size'] * 8 if dst.get('size') else 64
+                hint_src = src['size'] * 8 if src.get('size') else 64
                 true_size = min(hint_dst, hint_src)
                 
                 _, dst_size = self._read_operand(dst, hint_size=true_size)
@@ -379,21 +394,30 @@ class Z3Translator:
         elif instr.mnemonic == 'lea':
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
-                addr_ast = self._parse_memory_address(src)
-                _, dst_size = self._read_operand(dst)
-                
-                # Z3 addresses are 64-bit, truncate if destination is smaller (e.g. lea eax, [...])
-                if dst_size < 64:
-                    addr_ast = z3.Extract(dst_size - 1, 0, addr_ast)
+                if src['type'] == 'mem':
+                    addr_ast = z3.BitVecVal(src['disp'], 64)
+                    if src['base']:
+                        base_ast, _ = self._read_operand({'type': 'reg', 'value': src['base']}, hint_size=64)
+                        if base_ast.size() != 64: base_ast = z3.ZeroExt(64 - base_ast.size(), base_ast)
+                        addr_ast = addr_ast + base_ast
+                    if src['index']:
+                        index_ast, _ = self._read_operand({'type': 'reg', 'value': src['index']}, hint_size=64)
+                        if index_ast.size() != 64: index_ast = z3.ZeroExt(64 - index_ast.size(), index_ast)
+                        addr_ast = addr_ast + (index_ast * src['scale'])
                     
-                self._write_operand(dst, addr_ast)
+                    _, dst_size = self._read_operand(dst)
+                    
+                    if dst_size < 64:
+                        addr_ast = z3.Extract(dst_size - 1, 0, addr_ast)
+                        
+                    self._write_operand(dst, addr_ast)
                 
         elif instr.mnemonic in ['add', 'sub', 'xor', 'and', 'or', 'cmp', 'test']:
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
                 
-                hint_dst = self._get_operand_size_hint(dst)
-                hint_src = self._get_operand_size_hint(src)
+                hint_dst = dst['size'] * 8 if dst.get('size') else 64
+                hint_src = src['size'] * 8 if src.get('size') else 64
                 true_size = min(hint_dst, hint_src)
                 
                 dst_val, dst_size = self._read_operand(dst, hint_size=true_size)
@@ -484,13 +508,13 @@ class Z3Translator:
                 
                 # Fetch implicit operand based on size
                 if src_size == 8:
-                    implied_val, _ = self._read_operand('al')
+                    implied_val, _ = self._read_operand({'type': 'reg', 'value': 'al'})
                 elif src_size == 16:
-                    implied_val, _ = self._read_operand('ax')
+                    implied_val, _ = self._read_operand({'type': 'reg', 'value': 'ax'})
                 elif src_size == 32:
-                    implied_val, _ = self._read_operand('eax')
+                    implied_val, _ = self._read_operand({'type': 'reg', 'value': 'eax'})
                 elif src_size == 64:
-                    implied_val, _ = self._read_operand('rax')
+                    implied_val, _ = self._read_operand({'type': 'reg', 'value': 'rax'})
                 else:
                     return # Unsupported size
                     
@@ -506,20 +530,20 @@ class Z3Translator:
                 
                 # Slice the expanded result back into the physical registers
                 if src_size == 8:
-                    self._write_operand('ax', result_math)
+                    self._write_operand({'type': 'reg', 'value': 'ax'}, result_math)
                 else:
                     lower_half = z3.Extract(src_size - 1, 0, result_math)
                     upper_half = z3.Extract((src_size * 2) - 1, src_size, result_math)
                     
                     if src_size == 16:
-                        self._write_operand('ax', lower_half)
-                        self._write_operand('dx', upper_half)
+                        self._write_operand({'type': 'reg', 'value': 'ax'}, lower_half)
+                        self._write_operand({'type': 'reg', 'value': 'dx'}, upper_half)
                     elif src_size == 32:
-                        self._write_operand('eax', lower_half)
-                        self._write_operand('edx', upper_half)
+                        self._write_operand({'type': 'reg', 'value': 'eax'}, lower_half)
+                        self._write_operand({'type': 'reg', 'value': 'edx'}, upper_half)
                     elif src_size == 64:
-                        self._write_operand('rax', lower_half)
-                        self._write_operand('rdx', upper_half)
+                        self._write_operand({'type': 'reg', 'value': 'rax'}, lower_half)
+                        self._write_operand({'type': 'reg', 'value': 'rdx'}, upper_half)
             elif len(ops) == 2 or len(ops) == 3:
                 dst = ops[0]
                 src1 = ops[1]
@@ -544,10 +568,10 @@ class Z3Translator:
             if len(ops) == 1:
                 src = ops[0]
                 src_val, src_size = self._read_operand(src)
-                rsp_val, _ = self._read_operand('rsp')
+                rsp_val, _ = self._read_operand({'type': 'reg', 'value': 'rsp'})
                 
                 rsp_new = rsp_val - (src_size // 8)
-                self._write_operand('rsp', rsp_new)
+                self._write_operand({'type': 'reg', 'value': 'rsp'}, rsp_new)
                 
                 # Byte-Level Write directly to symbolic rsp_new
                 for i in range(src_size // 8):
@@ -558,7 +582,7 @@ class Z3Translator:
             if len(ops) == 1:
                 dst = ops[0]
                 _, dst_size = self._read_operand(dst)
-                rsp_val, _ = self._read_operand('rsp')
+                rsp_val, _ = self._read_operand({'type': 'reg', 'value': 'rsp'})
                 
                 # Read from memory symbolically at rsp_val
                 read_bytes = []
@@ -577,12 +601,12 @@ class Z3Translator:
                     
                 self._write_operand(dst, res_val)
                 rsp_new = rsp_val + (dst_size // 8)
-                self._write_operand('rsp', rsp_new)
+                self._write_operand({'type': 'reg', 'value': 'rsp'}, rsp_new)
                 
         elif instr.mnemonic == 'cdqe':
-            eax_val, _ = self._read_operand('eax')
+            eax_val, _ = self._read_operand({'type': 'reg', 'value': 'eax'})
             rax_val = z3.SignExt(32, eax_val)
-            self._write_operand('rax', rax_val)
+            self._write_operand({'type': 'reg', 'value': 'rax'}, rax_val)
             
         elif instr.mnemonic.startswith('set'):
             if len(ops) == 1:
@@ -625,9 +649,9 @@ class Z3Translator:
             pass # Unconditional jumps don't change mathematical state
             
         elif instr.mnemonic == 'call':
-            rsp_val, _ = self._read_operand('rsp')
+            rsp_val, _ = self._read_operand({'type': 'reg', 'value': 'rsp'})
             rsp_new = rsp_val - 8
-            self._write_operand('rsp', rsp_new)
+            self._write_operand({'type': 'reg', 'value': 'rsp'}, rsp_new)
             
             rip_val = z3.BitVecVal(instr.address + instr.size, 64)
             for i in range(8):
@@ -644,24 +668,22 @@ class Z3Translator:
                     self._clobber_register(r)
 
         elif instr.mnemonic == 'ret':
-            rsp_val, _ = self._read_operand('rsp')
+            rsp_val, _ = self._read_operand({'type': 'reg', 'value': 'rsp'})
             rsp_new = rsp_val + 8
             
-            if len(ops) == 1 and ops[0]:
+            if len(ops) == 1:
                 imm = ops[0]
-                if imm.startswith('0x'):
-                    rsp_new = rsp_new + int(imm, 16)
-                elif imm.isdigit():
-                    rsp_new = rsp_new + int(imm)
+                if imm['type'] == 'imm':
+                    rsp_new = rsp_new + imm['value']
                     
-            self._write_operand('rsp', rsp_new)
+            self._write_operand({'type': 'reg', 'value': 'rsp'}, rsp_new)
             
         elif instr.mnemonic in ['cmpxchg', 'lock cmpxchg']:
             if len(ops) == 2:
                 dst, src = ops[0], ops[1]
                 
-                hint_dst = self._get_operand_size_hint(dst)
-                hint_src = self._get_operand_size_hint(src)
+                hint_dst = dst['size'] * 8 if dst.get('size') else 64
+                hint_src = src['size'] * 8 if src.get('size') else 64
                 true_size = min(hint_dst, hint_src)
                 
                 dst_val, dst_size = self._read_operand(dst, hint_size=true_size)
@@ -672,14 +694,14 @@ class Z3Translator:
                 elif dst_size == 32: acc_reg = 'eax'
                 elif dst_size == 64: acc_reg = 'rax'
                 
-                acc_val, _ = self._read_operand(acc_reg)
+                acc_val, _ = self._read_operand({'type': 'reg', 'value': acc_reg})
                 
                 dst_val, src_val = self._match_sizes(dst_val, src_val)
                 acc_val, dst_val = self._match_sizes(acc_val, dst_val)
                 
                 # Deduce path taken from dynamic trace
                 is_eq = False
-                if 'ptr' in dst:
+                if dst['type'] == 'mem':
                     is_eq = len(instr.mem_write) > 0
                 
                 # Force the solver to follow the actual execution path
@@ -689,15 +711,15 @@ class Z3Translator:
                     self._write_flag('flag_zf', z3.BoolVal(True))
                 else:
                     self.solver.add(acc_val != dst_val)
-                    self._write_operand(acc_reg, dst_val)
+                    self._write_operand({'type': 'reg', 'value': acc_reg}, dst_val)
                     self._write_flag('flag_zf', z3.BoolVal(False))
 
         elif instr.mnemonic in ['xchg', 'lock xchg']:
             if len(ops) == 2:
                 op1, op2 = ops[0], ops[1]
                 
-                size1_hint = self._get_operand_size_hint(op1)
-                size2_hint = self._get_operand_size_hint(op2)
+                size1_hint = op1['size'] * 8 if op1.get('size') else 64
+                size2_hint = op2['size'] * 8 if op2.get('size') else 64
                 true_size = min(size1_hint, size2_hint)
                 
                 val1, size1 = self._read_operand(op1, hint_size=true_size)

@@ -56,23 +56,23 @@ def main():
         translator = Z3Translator(memory_provider=core.se.mem_read)
         key_var = z3.BitVec("key_input", 32)
         
-        # مسح الافتراضات السابقة
+        # Clear previous assumptions
         check_key_start_tick = 0
         for record in chronological_slice:
             if record.mnemonic == 'push' and 'rbp' in record.op_str:
                 check_key_start_tick = record.tick
 
         for record in chronological_slice:
-            # 1. إجبار تعليمة الهدف (cmp) على توليد الأعلام لأن السلايسر تجاهلها
+            # 1. Force the target instruction (cmp) to generate flags because the slicer ignored it
             if record.tick == target_tick:
                 record.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
             
-            # 2. تنظيف الماضي (مسح قيود المسار للقفزات العشوائية)
+            # 2. Clean the past (clear path constraints for random jumps)
             if record.mnemonic.startswith('j') and record.mnemonic != 'jmp':
                 if record.tick != target_tick + 1:
                     record.jump_taken = None 
 
-            # 3. قلب القفزة الهدف لفرض الفوز
+            # 3. Flip the target jump to force a win
             if record.tick == target_tick + 1:
                 if record.jump_taken is not None:
                     record.jump_taken = not record.jump_taken
@@ -80,7 +80,7 @@ def main():
                     
             translator.parse_instruction(record)
             
-            # 4. حقن المفتاح الرمزي
+            # 4. Inject the symbolic key
             if record.tick == check_key_start_tick:
                 translator.reg_state["ecx"] = key_var
                 translator.reg_state["rcx"] = z3.ZeroExt(32, key_var)

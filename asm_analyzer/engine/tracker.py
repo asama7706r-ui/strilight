@@ -16,6 +16,7 @@ class TraceRecord:
         self.mem_write: List[int] = []
         self.requested_flags: List[str] = []  # For Lazy Flag Generation
         self.jump_taken: Optional[bool] = None # Added for Constraint Translation
+        self.operands: List[Dict[str, Any]] = [] # Structured operands from Capstone
 
     def __repr__(self):
         return f"<TraceRecord Tick:{self.tick:04d} {self.mnemonic} {self.op_str}>"
@@ -167,9 +168,10 @@ class BackwardSliceTracker:
                     if len(record.regs_read) == 0 and len(record.mem_read) == 0:
                         is_taint_breaker = True
                     elif record.mnemonic in ("xor", "sub"):
-                        ops = [op.strip() for op in record.op_str.split(",")]
-                        if len(ops) == 2 and ops[0] == ops[1]:
-                            is_taint_breaker = True
+                        if len(record.operands) == 2:
+                            op0, op1 = record.operands[0], record.operands[1]
+                            if op0['type'] == 'reg' and op1['type'] == 'reg' and op0['value'] == op1['value']:
+                                is_taint_breaker = True
                             
                     if is_taint_breaker and record.mnemonic != 'call':
                         print(f"  -> [Taint Breaker] Hit dead-end at Tick {record.tick} via ({record.mnemonic} {record.op_str}). Switching to Control Dependency!")
@@ -260,9 +262,10 @@ class ForwardSliceTracker:
             if len(record.regs_read) == 0 and len(record.mem_read) == 0:
                 is_taint_breaker = True
             elif record.mnemonic in ("xor", "sub"):
-                ops = [op.strip() for op in record.op_str.split(",")]
-                if len(ops) == 2 and ops[0] == ops[1]:
-                    is_taint_breaker = True
+                if len(record.operands) == 2:
+                    op0, op1 = record.operands[0], record.operands[1]
+                    if op0['type'] == 'reg' and op1['type'] == 'reg' and op0['value'] == op1['value']:
+                        is_taint_breaker = True
             
             if is_taint_breaker and record.mnemonic != 'call':
                 killed_regs = []
@@ -474,9 +477,9 @@ class Tracker:
                 write_size = max(write_size, self.REGISTER_SIZES[reg])
                 
         if write_size == 1:
-            if "qword ptr" in record.op_str.lower(): write_size = 8
-            elif "dword ptr" in record.op_str.lower(): write_size = 4
-            elif "word ptr" in record.op_str.lower(): write_size = 2
+            for op in record.operands:
+                if op['type'] == 'mem' and op.get('size'):
+                    return op['size']
         return write_size
 
     def __init__(self):

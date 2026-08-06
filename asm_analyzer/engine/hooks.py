@@ -46,11 +46,13 @@ def setup_hooks(core_instance):
             if i.regs_write:
                 writes.extend([i.reg_name(r) for r in i.regs_write])
                 
+            ops_structs = []
             # Explicit operands
             if i.operands:
                 for idx, op in enumerate(i.operands):
                     if op.type == X86_OP_REG:
                         reg_name = i.reg_name(op.reg)
+                        ops_structs.append({'type': 'reg', 'value': reg_name, 'size': op.size})
                         if idx == 0 and i.mnemonic not in ('cmp', 'test'):
                             if i.mnemonic not in ('mov', 'lea'):
                                 reads.append(reg_name)
@@ -59,10 +61,24 @@ def setup_hooks(core_instance):
                             reads.append(reg_name)
                             
                     elif op.type == X86_OP_MEM:
+                        base = i.reg_name(op.mem.base) if op.mem.base != 0 else None
+                        index = i.reg_name(op.mem.index) if op.mem.index != 0 else None
+                        ops_structs.append({
+                            'type': 'mem',
+                            'base': base,
+                            'index': index,
+                            'scale': op.mem.scale,
+                            'disp': op.mem.disp,
+                            'size': op.size
+                        })
                         if op.mem.base != 0:
-                            reads.append(i.reg_name(op.mem.base))
+                            reads.append(base)
                         if op.mem.index != 0:
-                            reads.append(i.reg_name(op.mem.index))
+                            reads.append(index)
+                    elif op.type == X86_OP_IMM:
+                        ops_structs.append({'type': 'imm', 'value': op.imm, 'size': op.size})
+
+            record.operands = ops_structs
 
             record.regs_read = list(set(reads))
             record.regs_write = list(set(writes))
