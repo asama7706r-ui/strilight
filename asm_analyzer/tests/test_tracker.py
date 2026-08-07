@@ -3,6 +3,7 @@ from asm_analyzer.engine.tracker import Tracker, TraceRecord, Descendant, Ancest
 
 def test_trace_record():
     r = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 1", size=5)
+    r.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 1, 'size': 8}]
     r.regs_write = ["rax"]
     assert str(r) == "<TraceRecord Tick:0001 mov rax, 1>"
 
@@ -12,6 +13,7 @@ def test_descendant_ancestor():
     assert d.at_tick == 5
     
     r = TraceRecord(tick=2, address=0x1000, mnemonic="mov", op_str="rbx, 1", size=5)
+    r.operands = [{'type': 'reg', 'value': 'rbx', 'size': 8}, {'type': 'imm', 'value': 1, 'size': 8}]
     a = Ancestor("rbx", 2, r)
     assert a.target == "rbx"
     assert a.modified_at_tick == 2
@@ -20,6 +22,7 @@ def test_descendant_ancestor():
 def test_tracker_add_record():
     tracker = Tracker()
     r = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 1", size=5)
+    r.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 1, 'size': 8}]
     tracker.add_trace(r)
     
     assert len(tracker.trace_history) == 1
@@ -30,10 +33,12 @@ def test_backward_slice():
     
     # tick 1: mov rbx, 5
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rbx, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'rbx', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     r1.regs_write = ["rbx"]
     
     # tick 2: add rax, rbx
     r2 = TraceRecord(tick=2, address=0x1005, mnemonic="add", op_str="rax, rbx", size=3)
+    r2.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'reg', 'value': 'rbx', 'size': 8}]
     r2.regs_read = ["rax", "rbx"]
     r2.regs_write = ["rax"]
     
@@ -52,9 +57,11 @@ def test_backward_slice():
 def test_backward_slice_memory_must_alias():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="dword ptr [0x2000], 42", size=7)
+    r1.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 4}, {'type': 'imm', 'value': 42, 'size': 8}]
     r1.mem_write = [0x2000]
     
     r2 = TraceRecord(tick=2, address=0x1007, mnemonic="mov", op_str="eax, dword ptr [0x2000]", size=5)
+    r2.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 4}]
     r2.mem_read = [0x2000]
     r2.regs_write = ["eax"]
     
@@ -73,13 +80,16 @@ def test_backward_slice_taint_breaker():
     tracker = Tracker()
     
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     r1.regs_write = ["eax"]
     
     r2 = TraceRecord(tick=2, address=0x1005, mnemonic="xor", op_str="eax, eax", size=2)
+    r2.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r2.regs_write = ["eax"]
     r2.regs_read = ["eax"]
     
     r3 = TraceRecord(tick=3, address=0x1007, mnemonic="add", op_str="ebx, eax", size=3)
+    r3.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r3.regs_read = ["ebx", "eax"]
     r3.regs_write = ["ebx"]
     
@@ -97,13 +107,16 @@ def test_backward_slice_taint_breaker():
 def test_backward_slice_register_may_alias():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 0x2000", size=7)
+    r1.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 0x2000, 'size': 8}]
     r1.regs_write = ["rax"]
 
     r2 = TraceRecord(tick=2, address=0x1007, mnemonic="mov", op_str="dword ptr [rax], 42", size=5)
+    r2.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0, 'size': 4}, {'type': 'imm', 'value': 42, 'size': 8}]
     r2.mem_write = [0x2000]
     r2.regs_read = ["rax"] # Pointer register used
     
     r3 = TraceRecord(tick=3, address=0x100c, mnemonic="mov", op_str="ebx, dword ptr [0x2000]", size=5)
+    r3.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 4}]
     r3.mem_read = [0x2000]
     r3.regs_write = ["ebx"]
 
@@ -126,10 +139,12 @@ def test_backward_slice_register_may_alias():
 def test_backward_slice_control_flow():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="cmp", op_str="eax, 5", size=3)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     r1.regs_read = ["eax"]
     r1.regs_write = ["eflags"]
     
     r2 = TraceRecord(tick=2, address=0x1003, mnemonic="je", op_str="0x1010", size=2)
+    r2.operands = [{'type': 'imm', 'value': 0x1010, 'size': 8}]
     # backward_slice logic traces flags explicitly when requested
     
     tracker.add_trace(r1)
@@ -144,13 +159,16 @@ def test_backward_slice_control_flow():
 def test_forward_slice_basic_register_taint():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     r1.regs_write = ["eax"]
     
     r2 = TraceRecord(tick=2, address=0x1005, mnemonic="mov", op_str="ebx, eax", size=2)
+    r2.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r2.regs_read = ["eax"]
     r2.regs_write = ["ebx"]
     
     r3 = TraceRecord(tick=3, address=0x1007, mnemonic="add", op_str="ecx, ebx", size=3)
+    r3.operands = [{'type': 'reg', 'value': 'ecx', 'size': 4}, {'type': 'reg', 'value': 'ebx', 'size': 4}]
     r3.regs_read = ["ecx", "ebx"]
     r3.regs_write = ["ecx"]
 
@@ -169,10 +187,12 @@ def test_forward_slice_basic_register_taint():
 def test_forward_slice_memory_taint():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="dword ptr [0x2000], eax", size=7)
+    r1.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r1.mem_write = [0x2000]
     r1.regs_read = ["eax"]
 
     r2 = TraceRecord(tick=2, address=0x1007, mnemonic="mov", op_str="ebx, dword ptr [0x2000]", size=5)
+    r2.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 4}]
     r2.mem_read = [0x2000]
     r2.regs_write = ["ebx"]
     
@@ -187,14 +207,17 @@ def test_forward_slice_memory_taint():
 def test_forward_slice_taint_killed():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="ebx, eax", size=2)
+    r1.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r1.regs_read = ["eax"]
     r1.regs_write = ["ebx"]
 
     r2 = TraceRecord(tick=2, address=0x1005, mnemonic="xor", op_str="ebx, ebx", size=2)
+    r2.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'reg', 'value': 'ebx', 'size': 4}]
     r2.regs_read = ["ebx"]
     r2.regs_write = ["ebx"]
 
     r3 = TraceRecord(tick=3, address=0x1007, mnemonic="mov", op_str="ecx, ebx", size=2)
+    r3.operands = [{'type': 'reg', 'value': 'ecx', 'size': 4}, {'type': 'reg', 'value': 'ebx', 'size': 4}]
     r3.regs_read = ["ebx"]
     r3.regs_write = ["ecx"]
 
@@ -219,12 +242,15 @@ def test_forward_slice_taint_killed():
 def test_forward_slice_flag_propagation():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="cmp", op_str="eax, 5", size=3)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     r1.regs_read = ["eax"]
     
     r2 = TraceRecord(tick=2, address=0x1003, mnemonic="je", op_str="0x1010", size=2)
+    r2.operands = [{'type': 'imm', 'value': 0x1010, 'size': 8}]
     r2.regs_read = ["flag_zf"] # To prevent taint breaker logic from skipping
     
     r3 = TraceRecord(tick=3, address=0x1010, mnemonic="mov", op_str="ebx, 1", size=5)
+    r3.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'imm', 'value': 1, 'size': 8}]
     
     tracker.add_trace(r1)
     tracker.add_trace(r2)
@@ -241,13 +267,16 @@ def test_forward_slice_backward_fallback():
     tracker = Tracker()
     
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     r1.regs_write = ["eax"]
     
     r2 = TraceRecord(tick=2, address=0x1005, mnemonic="mov", op_str="ebx, eax", size=2)
+    r2.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r2.regs_read = ["eax"]
     r2.regs_write = ["ebx"]
     
     r3 = TraceRecord(tick=3, address=0x1007, mnemonic="add", op_str="ecx, ebx", size=3)
+    r3.operands = [{'type': 'reg', 'value': 'ecx', 'size': 4}, {'type': 'reg', 'value': 'ebx', 'size': 4}]
     r3.regs_read = ["ecx", "ebx"]
     r3.regs_write = ["ecx"]
 
@@ -270,27 +299,33 @@ def test_forward_slice_backward_fallback():
 def test_tracker_memory_access_size_calculation():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="qword ptr [rax], rbx", size=7)
+    r1.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0, 'size': 8}, {'type': 'reg', 'value': 'rbx', 'size': 8}]
     r1.regs_read = ["rax", "rbx"]
     assert tracker._calculate_memory_access_size(r1) == 8
     
     r2 = TraceRecord(tick=2, address=0x1000, mnemonic="mov", op_str="dword ptr [rax], 5", size=7)
+    r2.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0, 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     r2.regs_read = ["rax"]
     # No register size to infer from, so it falls back to parsing 'dword ptr'
-    assert tracker._calculate_memory_access_size(r2) == 8 # wait, rax is 8, so max(1, 8) = 8!
+    assert tracker._calculate_memory_access_size(r2) == 4 # correctly uses 'mem' size from operands
     
     r3 = TraceRecord(tick=3, address=0x1000, mnemonic="mov", op_str="dword ptr [0x2000], 5", size=7)
+    r3.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     # no regs read
     assert tracker._calculate_memory_access_size(r3) == 4
     
     r4 = TraceRecord(tick=4, address=0x1000, mnemonic="mov", op_str="word ptr [0x2000], 5", size=7)
+    r4.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 2}, {'type': 'imm', 'value': 5, 'size': 8}]
     assert tracker._calculate_memory_access_size(r4) == 2
     
     r5 = TraceRecord(tick=5, address=0x1000, mnemonic="mov", op_str="byte ptr [0x2000], 5", size=7)
+    r5.operands = [{'type': 'mem', 'base': None, 'index': None, 'scale': 1, 'disp': 0x2000, 'size': 1}, {'type': 'imm', 'value': 5, 'size': 8}]
     assert tracker._calculate_memory_access_size(r5) == 1
 
 def test_tracker_get_trace_at_tick():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="nop", op_str="", size=1)
+    r1.operands = []
     tracker.add_trace(r1)
     
     assert tracker.get_trace_at_tick(1) == r1
@@ -301,17 +336,21 @@ def test_backward_slice_deduplication():
     tracker = Tracker()
     # A single instruction gets referenced via multiple paths
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
     r1.regs_write = ["eax"]
     
     r2 = TraceRecord(tick=2, address=0x1005, mnemonic="mov", op_str="ebx, eax", size=2)
+    r2.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r2.regs_read = ["eax"]
     r2.regs_write = ["ebx"]
     
     r3 = TraceRecord(tick=3, address=0x1007, mnemonic="mov", op_str="ecx, eax", size=2)
+    r3.operands = [{'type': 'reg', 'value': 'ecx', 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
     r3.regs_read = ["eax"]
     r3.regs_write = ["ecx"]
     
     r4 = TraceRecord(tick=4, address=0x1009, mnemonic="add", op_str="edx, ebx", size=2)
+    r4.operands = [{'type': 'reg', 'value': 'edx', 'size': 4}, {'type': 'reg', 'value': 'ebx', 'size': 4}]
     r4.regs_read = ["edx", "ebx", "ecx"] # artificially adding ecx to force multiple paths
     r4.regs_write = ["edx"]
     

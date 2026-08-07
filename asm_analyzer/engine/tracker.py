@@ -471,15 +471,15 @@ class Tracker:
             REG_TO_BASE[sub] = base
 
     def _calculate_memory_access_size(self, record: TraceRecord) -> int:
-        write_size = 1 # Default
+        for op in record.operands:
+            if op['type'] == 'mem' and op.get('size'):
+                return op['size']
+
+        # Fallback to register sizes if memory size is not found natively in operands
+        write_size = 1
         for reg in record.regs_read:
             if reg in self.REGISTER_SIZES:
                 write_size = max(write_size, self.REGISTER_SIZES[reg])
-                
-        if write_size == 1:
-            for op in record.operands:
-                if op['type'] == 'mem' and op.get('size'):
-                    return op['size']
         return write_size
 
     def __init__(self):

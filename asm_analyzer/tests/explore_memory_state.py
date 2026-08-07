@@ -15,13 +15,13 @@ def explore_memory():
     core = AnalyzerCore(target_path=[target_exe, "5001"])
     setup_hooks(core)
     
-    # سنقوم بإضافة خطاف (Hook) إضافي لمراقبة ما يراه المحاكي في الذاكرة
+    # We will add an extra hook to monitor what the emulator sees in memory
     def inspect_mem_read(emu, access, address, size, value):
         try:
-            # قراءة القيمة الحقيقية من ذاكرة المحاكي أثناء التنفيذ
+            # Read the actual value from the emulator's memory during execution
             actual_value = emu.mem_read(address, size)
             val_hex = actual_value.hex()
-            # سنقوم بطباعة قراءات الذاكرة التي تقع في منطقة البيانات (Data/Rdata)
+            # We will print memory readings that fall in the data area (Data/Rdata)
             if address > core.module_base + 0x1000:
                 print(f"[Speakeasy Memory] Address: 0x{address:x} | Size: {size} bytes | Actual Value: 0x{val_hex}")
         except Exception as e:
@@ -31,7 +31,7 @@ def explore_memory():
     
     print("[*] Running Emulator for a few instructions to inspect memory state...\n")
     
-    # إيقاف المحاكي مبكراً بعد 150 تعليمة فقط لكي لا نغرق في المخرجات
+    # Stop the emulator early after only 150 instructions so we don't drown in output
     instruction_count = 0
     def stop_early(se, address, size):
         nonlocal instruction_count
@@ -50,7 +50,7 @@ def explore_memory():
     print("As you can see, the Emulator (Speakeasy) perfectly knows the values in memory.")
     print("But let's look at what our Tracker recorded for one of these instructions:")
     
-    # البحث عن تعليمة قامت بقراءة من الذاكرة في سجل المتتبع
+    # Search for an instruction that read from memory in the tracker log
     for record in core.tracker.trace_history:
         if record.mem_read:
             print(f"\nTick {record.tick}: {record.mnemonic} {record.op_str}")

@@ -1,9 +1,9 @@
 # stop_dict.py
-# قاموس التوقف للدوال - Stop dictionary for functions
+# Stop dictionary for functions
 
-# قائمة بالدوال التي يجب أن يتوقف المحرك عندها أو يتخطاها (API Boundaries)
+# List of functions where the engine should stop or skip (API Boundaries)
 STOP_FUNCTIONS = {
-    # دوال الإدخال والقراءة (تتطلب تفاعل أو انتظار)
+    # Input and reading functions (require interaction or waiting)
     "scanf": "input",
     "gets": "input",
     "fgets": "input",
@@ -11,7 +11,7 @@ STOP_FUNCTIONS = {
     "ReadFile": "input",
     "recv": "network_input",
     
-    # دوال الكتابة والإخراج (لا نحتاج لتتبع تفاصيلها الداخلية)
+    # Writing and output functions (we don't need to track their internal details)
     "printf": "output",
     "puts": "output",
     "fputs": "output",
