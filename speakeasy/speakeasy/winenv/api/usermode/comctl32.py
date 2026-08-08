@@ -1,0 +1,41 @@
+# Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
+
+
+from .. import api
+
+
+class Comctl32(api.ApiHandler):
+    name = "comctl32"
+    apihook = api.ApiHandler.apihook
+    impdata = api.ApiHandler.impdata
+
+    def __init__(self, emu):
+
+        super().__init__(emu)
+        self.funcs = {}
+        self.data = {}
+        super().__get_hook_attrs__(self)
+        self.netman = emu.get_network_manager()
+        self.names = {}
+
+    @apihook("InitCommonControlsEx", argc=1)
+    def InitCommonControlsEx(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        BOOL InitCommonControlsEx(
+            const INITCOMMONCONTROLSEX *picce
+        );
+        """
+        (picce,) = argv
+        rv = True
+
+        return rv
+
+    @apihook("InitCommonControls", argc=0)
+    def InitCommonControls(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        void InitCommonControls();
+
+        Under Comctl32.dll version 6.0 and later, InitCommonControls does nothing.
+        Applications must explicitly register all common controls through InitCommonControlsEx.
+        """
+        return

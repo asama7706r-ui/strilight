@@ -1,0 +1,21 @@
+import pytest
+
+
+@pytest.mark.parametrize("bin_file", ["argv_test_x86.exe.xz"])
+def test_argv_exe(config, load_test_bin, run_test, bin_file):
+    argv_len = 10
+    argv = [f"argument_{i + 1}" for i in range(argv_len)]
+    data = load_test_bin(bin_file)
+    report = run_test(config, data, argv=argv)
+    ep = report.entry_points
+    printfs = []
+    for evt in ep[0].events or []:
+        if evt.event == "api" and "__stdio_common_vfprintf" in evt.api_name:
+            printfs.append(evt)
+
+    assert len(printfs) - 2 == argv_len
+    for i, p in enumerate(printfs[2:]):
+        i += 1
+        fmt_str = p.args[2]
+        test_str = f"argv[{i}] = argument_{i}\n"
+        assert test_str == fmt_str
