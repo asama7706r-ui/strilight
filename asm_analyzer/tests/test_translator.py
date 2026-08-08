@@ -161,6 +161,32 @@ def test_translator_unhandled():
     # Just asserting no exception for unhandled instructions
     assert True
 
+def test_translator_match_sizes():
+    translator = Z3Translator()
+    
+    # Test equal sizes
+    dst_32 = z3.BitVec('dst_32', 32)
+    src_32 = z3.BitVec('src_32', 32)
+    d, s = translator._match_sizes(dst_32, src_32)
+    assert d.size() == 32
+    assert s.size() == 32
+    # Ensure source was not zero-extended or extracted unnecessarily
+    assert not (s.decl().kind() == z3.Z3_OP_ZERO_EXT or s.decl().kind() == z3.Z3_OP_EXTRACT)
+    
+    # Test dst size > src size
+    dst_64 = z3.BitVec('dst_64', 64)
+    d, s = translator._match_sizes(dst_64, src_32)
+    assert d.size() == 64
+    assert s.size() == 64
+    assert s.decl().kind() == z3.Z3_OP_ZERO_EXT
+    
+    # Test dst size < src size
+    dst_16 = z3.BitVec('dst_16', 16)
+    d, s = translator._match_sizes(dst_16, src_32)
+    assert d.size() == 16
+    assert s.size() == 16
+    assert s.decl().kind() == z3.Z3_OP_EXTRACT
+
 def test_translator_smart_concretization_fallback():
     translator = Z3Translator()
     

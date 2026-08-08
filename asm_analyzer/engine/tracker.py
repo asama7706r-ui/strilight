@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+from collections import deque
 
 class TraceRecord:
     def __init__(self, tick: int, address: int, size: int, mnemonic: str, op_str: str, thread_id: int = 0):
@@ -42,12 +43,12 @@ class BackwardSliceTracker:
         self.ctx = ctx
 
     def build_backward_slice(self, initial_descendant: Descendant) -> List[TraceRecord]:
-        worklist = [initial_descendant]
+        worklist = deque([initial_descendant])
         all_slice_instructions = []
         global_end_tick = initial_descendant.at_tick
         
         while worklist:
-            descendant = worklist.pop(0) # BFS
+            descendant = worklist.popleft() # BFS
             
             # 1. Check PathTree Memoization Cache first
             cached_slice = self.ctx.path_tree.get_cached_slice(descendant.target, descendant.at_tick)
@@ -103,7 +104,7 @@ class BackwardSliceTracker:
                 pointer_regs_used = []
                 
                 if tracked_mem and record.mem_write:
-                    pointer_regs_used = [r for r in record.regs_read if r in ('eax','ebx','ecx','edx','esi','edi','rax','rbx','rcx','rdx','rsi','rdi', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15')]
+                    pointer_regs_used = [r for r in record.regs_read if r in {'eax','ebx','ecx','edx','esi','edi','rax','rbx','rcx','rdx','rsi','rdi', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15'}]
                     if not pointer_regs_used:
                         # Absolute Must-Alias (No registers used as pointers)
                         write_size = self.ctx._calculate_memory_access_size(record)
@@ -121,7 +122,7 @@ class BackwardSliceTracker:
                         for ptr in pointer_regs_used:
                             new_desc = Descendant(target=ptr, at_tick=record.tick)
                             worklist.append(new_desc)
-                            print(f"  -> [May-Alias] Tracking pointer '{ptr}' at Tick {record.tick} for potential aliasing with {tracked_mem}")
+                            print(f"  -> [May-Alias] Tracking pointer '{ptr}' at Tick {record.tick} for potential aliasing with {len(tracked_mem)} addresses")
                             
                             # Pruning Constraints: Launch Forward Tracker to gather path constraints on this pointer
                             print(f"  -> [Bidirectional Slicing] Launching Forward Tracker on '{ptr}' to prune Z3 constraints up to Tick {global_end_tick}...")

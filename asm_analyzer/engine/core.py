@@ -1,6 +1,7 @@
 import os
 import copy
 import speakeasy
+# pyrefly: ignore [missing-import]
 import speakeasy.config as cfg
 from asm_analyzer.engine.tracker import Tracker
 
