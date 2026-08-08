@@ -44,23 +44,30 @@ def test_z3_translator_init():
 def test_translator_mov():
     translator = Z3Translator()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     translator.parse_instruction(r1)
     assert get_value(translator, "rax") == 5
 
 def test_translator_add():
     translator = Z3Translator()
-    translator.parse_instruction(TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 5", size=5))
-    translator.parse_instruction(TraceRecord(tick=2, address=0x1005, mnemonic="add", op_str="rax, 3", size=4))
+    mov_rec = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 5", size=5)
+    mov_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
+    translator.parse_instruction(mov_rec)
+    add_rec = TraceRecord(tick=2, address=0x1005, mnemonic="add", op_str="rax, 3", size=4)
+    add_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 3, 'size': 8}]
+    translator.parse_instruction(add_rec)
     assert get_value(translator, "rax") == 8
 
 def test_translator_cmp_flags():
     translator = Z3Translator()
     
     mov_rec = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 5", size=5)
+    mov_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     translator.parse_instruction(mov_rec)
     
     # cmp rax, 5 => ZF=1
     cmp_rec = TraceRecord(tick=2, address=0x1005, mnemonic="cmp", op_str="rax, 5", size=4)
+    cmp_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     cmp_rec.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
     translator.parse_instruction(cmp_rec)
     
@@ -70,6 +77,7 @@ def test_translator_cmp_flags():
 
     # cmp rax, 6 => ZF=0, CF=1 (5 < 6)
     cmp_rec2 = TraceRecord(tick=3, address=0x1009, mnemonic="cmp", op_str="rax, 6", size=4)
+    cmp_rec2.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 6, 'size': 8}]
     cmp_rec2.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
     translator.parse_instruction(cmp_rec2)
 
@@ -81,9 +89,11 @@ def test_translator_jumps():
     translator = Z3Translator()
     
     mov_rec = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 5", size=5)
+    mov_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     translator.parse_instruction(mov_rec)
     
     cmp_rec = TraceRecord(tick=2, address=0x1005, mnemonic="cmp", op_str="rax, 5", size=4)
+    cmp_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     cmp_rec.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
     translator.parse_instruction(cmp_rec)
     
@@ -97,9 +107,11 @@ def test_translator_jumps_unsat():
     translator = Z3Translator()
     
     mov_rec = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 5", size=5)
+    mov_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     translator.parse_instruction(mov_rec)
     
     cmp_rec = TraceRecord(tick=2, address=0x1005, mnemonic="cmp", op_str="rax, 5", size=4)
+    cmp_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 5, 'size': 8}]
     cmp_rec.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
     translator.parse_instruction(cmp_rec)
     
@@ -114,9 +126,17 @@ def test_translator_jumps_unsat():
 def test_translator_mul():
     translator = Z3Translator()
     
-    translator.parse_instruction(TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 2", size=5))
-    translator.parse_instruction(TraceRecord(tick=2, address=0x1005, mnemonic="mov", op_str="ebx, 3", size=5))
-    translator.parse_instruction(TraceRecord(tick=3, address=0x100a, mnemonic="mul", op_str="ebx", size=2))
+    mov1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 2", size=5)
+    mov1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 2, 'size': 4}]
+    translator.parse_instruction(mov1)
+
+    mov2 = TraceRecord(tick=2, address=0x1005, mnemonic="mov", op_str="ebx, 3", size=5)
+    mov2.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'imm', 'value': 3, 'size': 4}]
+    translator.parse_instruction(mov2)
+
+    mul_rec = TraceRecord(tick=3, address=0x100a, mnemonic="mul", op_str="ebx", size=2)
+    mul_rec.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}]
+    translator.parse_instruction(mul_rec)
     
     assert get_value(translator, "eax") == 6
 
@@ -124,8 +144,12 @@ def test_translator_push_pop():
     translator = Z3Translator()
     
     # push rax
-    translator.parse_instruction(TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 0x12345678", size=5))
+    mov_rec = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 0x12345678", size=5)
+    mov_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 0x12345678, 'size': 8}]
+    translator.parse_instruction(mov_rec)
+
     push_rec = TraceRecord(tick=2, address=0x1005, mnemonic="push", op_str="rax", size=1)
+    push_rec.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}]
     push_rec.mem_write = [0x5000]
     translator.parse_instruction(push_rec)
     
@@ -136,8 +160,10 @@ def test_translator_push_pop():
     # The current Z3Translator has a bug where if `ptr` has no size prefix, it just uses hint_size, and then Smart Concretization prints the size and tries to read.
     # Since we can mock memory_provider properly, we just do it like this:
     pop_rec = TraceRecord(tick=3, address=0x1006, mnemonic="pop", op_str="qword ptr [0x5000]", size=1)
+    pop_rec.operands = [{'type': 'mem', 'disp': 0x5000, 'base': None, 'index': None, 'scale': 1, 'size': 8}]
     
     pop_rec2 = TraceRecord(tick=4, address=0x1007, mnemonic="pop", op_str="rbx", size=1)
+    pop_rec2.operands = [{'type': 'reg', 'value': 'rbx', 'size': 8}]
     pop_rec2.mem_read = [0x5000]
     
     translator.memory_provider = lambda addr, size: b"\x78\x56\x34\x12\x00\x00\x00\x00"[addr-0x5000:addr-0x5000+size]
@@ -156,6 +182,7 @@ def test_translator_unhandled():
     translator = Z3Translator()
     
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="vaddpd", op_str="ymm0, ymm1", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'ymm0', 'size': 32}, {'type': 'reg', 'value': 'ymm1', 'size': 32}]
     translator.parse_instruction(r1)
     
     # Just asserting no exception for unhandled instructions
@@ -196,6 +223,7 @@ def test_translator_smart_concretization_fallback():
     translator.memory_provider = buggy_provider
     
     pop_rec = TraceRecord(tick=3, address=0x1006, mnemonic="pop", op_str="rbx", size=1)
+    pop_rec.operands = [{'type': 'reg', 'value': 'rbx', 'size': 8}]
     pop_rec.mem_read = [0x5000]
     translator.parse_instruction(pop_rec)
     
