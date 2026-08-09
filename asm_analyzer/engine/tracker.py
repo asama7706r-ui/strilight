@@ -156,9 +156,6 @@ class BackwardSliceTracker:
                         if op in targets_to_track:
                             implicit_flow_trigger = True
                             print(f"  -> [Implicit Data Flow] Context-to-Physical-Interval Triggered at Tick {record.tick}")
-                            # Spawn descendant for the pointer register
-                            new_desc = Descendant(target=op, at_tick=record.tick)
-                            worklist.append(new_desc)
                             break
                 
                 if writes_to_target_reg or writes_to_target_mem or implicit_flow_trigger or writes_to_tracked_flag or may_alias_triggered:
@@ -178,7 +175,7 @@ class BackwardSliceTracker:
                         print(f"  -> [Taint Breaker] Hit dead-end at Tick {record.tick} via ({record.mnemonic} {record.op_str}). Switching to Control Dependency!")
                         
                     if is_taint_breaker:
-                        hunting_for_control_dependency = False
+                        hunting_for_control_dependency = True
                         
                     # KILL PHASE
                     if writes_to_target_reg or writes_to_tracked_flag:
@@ -237,6 +234,9 @@ class ForwardSliceTracker:
         """
         Walks forwards using a linear single-pass to propagate taint from start_tick to the end.
         """
+        if hasattr(target, 'target'):
+            target = target.target
+            
         cache_key = (target, start_tick, end_tick)
         if hasattr(self.ctx, 'forward_cache') and cache_key in self.ctx.forward_cache:
             print(f"[*] Forward Cache Hit for '{target}' from Tick {start_tick}")

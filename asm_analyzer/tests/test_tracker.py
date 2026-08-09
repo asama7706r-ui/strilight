@@ -1,3 +1,6 @@
+from unittest.mock import MagicMock
+from unittest.mock import MagicMock
+from unittest.mock import MagicMock
 import pytest
 from asm_analyzer.engine.tracker import Tracker, TraceRecord, Descendant, Ancestor, BackwardSliceTracker
 
@@ -42,7 +45,13 @@ def test_backward_slice():
     r2.regs_read = ["rax", "rbx"]
     r2.regs_write = ["rax"]
     
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     
     desc = Descendant("rax", 2)
@@ -65,7 +74,13 @@ def test_backward_slice_memory_must_alias():
     r2.mem_read = [0x2000]
     r2.regs_write = ["eax"]
     
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     
     desc = Descendant("eax", 2)
@@ -93,7 +108,13 @@ def test_backward_slice_taint_breaker():
     r3.regs_read = ["ebx", "eax"]
     r3.regs_write = ["ebx"]
     
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     tracker.add_trace(r3)
     
@@ -101,6 +122,7 @@ def test_backward_slice_taint_breaker():
     slice_records = tracker.build_backward_slice(desc)
     
     assert len(slice_records) == 1
+    assert slice_records[0] == r2
     assert slice_records[0].tick == 2
 
 
@@ -120,7 +142,13 @@ def test_backward_slice_register_may_alias():
     r3.mem_read = [0x2000]
     r3.regs_write = ["ebx"]
 
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     tracker.add_trace(r3)
 
@@ -147,12 +175,19 @@ def test_backward_slice_control_flow():
     r2.operands = [{'type': 'imm', 'value': 0x1010, 'size': 8}]
     # backward_slice logic traces flags explicitly when requested
     
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
 
     desc_flag = Descendant("flag_zf", 2)
     slice_records = tracker.build_backward_slice(desc_flag)
     assert len(slice_records) == 1
+    assert slice_records[0] == r1
     assert slice_records[0].tick == 1
 
 
@@ -172,7 +207,13 @@ def test_forward_slice_basic_register_taint():
     r3.regs_read = ["ecx", "ebx"]
     r3.regs_write = ["ecx"]
 
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     tracker.add_trace(r3)
 
@@ -196,11 +237,18 @@ def test_forward_slice_memory_taint():
     r2.mem_read = [0x2000]
     r2.regs_write = ["ebx"]
     
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
 
     slice_records = tracker.build_forward_slice(0x2000, start_tick=2)
     assert len(slice_records) == 1
+    assert slice_records[0] == r2
     assert slice_records[0].tick == 2
 
 
@@ -221,7 +269,13 @@ def test_forward_slice_taint_killed():
     r3.regs_read = ["ebx"]
     r3.regs_write = ["ecx"]
 
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     tracker.add_trace(r3)
 
@@ -236,6 +290,7 @@ def test_forward_slice_taint_killed():
     # Wait, r1 doesn't read eax if we start at 1. Wait, r1 does read eax!
     # Ah, the test checks if r3 is excluded.
     assert len(slice_records) == 1
+    assert slice_records[0] == r1
     assert slice_records[0].tick == 1
 
 
@@ -252,7 +307,13 @@ def test_forward_slice_flag_propagation():
     r3 = TraceRecord(tick=3, address=0x1010, mnemonic="mov", op_str="ebx, 1", size=5)
     r3.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'imm', 'value': 1, 'size': 8}]
     
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     tracker.add_trace(r3)
 
@@ -280,7 +341,13 @@ def test_forward_slice_backward_fallback():
     r3.regs_read = ["ecx", "ebx"]
     r3.regs_write = ["ecx"]
 
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     tracker.add_trace(r3)
 
@@ -326,7 +393,13 @@ def test_tracker_get_trace_at_tick():
     tracker = Tracker()
     r1 = TraceRecord(tick=1, address=0x1000, mnemonic="nop", op_str="", size=1)
     r1.operands = []
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     
     assert tracker.get_trace_at_tick(1) == r1
     assert tracker.get_trace_at_tick(0) is None
@@ -354,7 +427,13 @@ def test_backward_slice_deduplication():
     r4.regs_read = ["edx", "ebx", "ecx"] # artificially adding ecx to force multiple paths
     r4.regs_write = ["edx"]
     
+
+
+                        
+
+                        
     tracker.add_trace(r1)
+
     tracker.add_trace(r2)
     tracker.add_trace(r3)
     tracker.add_trace(r4)
@@ -368,3 +447,235 @@ def test_backward_slice_deduplication():
     assert slice_records[1].tick == 3
     assert slice_records[2].tick == 2
     assert slice_records[3].tick == 1
+
+
+from unittest.mock import MagicMock
+
+def test_backward_slice_cache():
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 5, 'size': 8}]
+    r1.regs_write = ["eax"]
+    tracker.add_trace(r1)
+    
+    tracker.path_tree = MagicMock()
+    tracker.path_tree.get_cached_slice.return_value = [r1]
+    
+    desc = Descendant(target="eax", at_tick=1)
+    slice_records = tracker.build_backward_slice(desc)
+    
+    assert len(slice_records) == 1
+
+def test_backward_slice_jump_eval():
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="cmp", op_str="eax, 5", size=3)
+    r1.regs_write = ["eflags"]
+    r2 = TraceRecord(tick=2, address=0x1003, mnemonic="je", op_str="0x2000", size=2)
+    r3 = TraceRecord(tick=3, address=0x2000, mnemonic="mov", op_str="eax, 1", size=5)
+    r3.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}]
+    r3.regs_write = ["eax"]
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    tracker.add_trace(r3)
+    
+    tracker.path_tree = MagicMock()
+    tracker.path_tree.get_cached_slice.return_value = None
+    
+    desc = Descendant(target="eax", at_tick=3)
+    slice_records = tracker.build_backward_slice(desc)
+    
+    assert len(slice_records) == 3
+
+def test_backward_slice_flag_zso_only():
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="inc", op_str="eax", size=3)
+    r1.regs_write = ["eflags"] 
+    
+    r2 = TraceRecord(tick=2, address=0x1003, mnemonic="je", op_str="0x2000", size=2)
+    r3 = TraceRecord(tick=3, address=0x1005, mnemonic="jc", op_str="0x2000", size=2)
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    tracker.add_trace(r3)
+    
+    tracker.path_tree = MagicMock()
+    tracker.path_tree.get_cached_slice.return_value = None
+    
+    desc_zf = Descendant(target="flag_zf", at_tick=2)
+    slice_zf = tracker.build_backward_slice(desc_zf)
+    
+    assert len(slice_zf) == 1
+    assert slice_zf[0] == r1
+    
+    desc_cf = Descendant(target="flag_cf", at_tick=3)
+    slice_cf = tracker.build_backward_slice(desc_cf)
+    
+    assert len(slice_cf) == 0
+
+def test_backward_slice_implicit_data_flow():
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, rcx", size=3)
+    r1.regs_write = ["rax"]
+    r1.regs_read = ["rcx"]
+    
+    r2 = TraceRecord(tick=2, address=0x1003, mnemonic="call", op_str="rax", size=2)
+    r2.regs_read = ["rax"]
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    
+    tracker.path_tree = MagicMock()
+    tracker.path_tree.get_cached_slice.return_value = None
+    
+    desc = Descendant(target="rax", at_tick=2)
+    slice_records = tracker.build_backward_slice(desc)
+    
+    assert len(slice_records) == 2
+    assert r1 in slice_records
+    assert r2 in slice_records
+
+def test_forward_slice_flags_killed():
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}]
+    r1.regs_write = ["eax"]
+    
+    r2 = TraceRecord(tick=2, address=0x1005, mnemonic="cmp", op_str="eax, 5", size=3)
+    r2.regs_read = ["eax"]
+    r2.regs_write = ["eflags"]
+    
+    r3 = TraceRecord(tick=3, address=0x1008, mnemonic="and", op_str="ebx, ebx", size=2)
+    r3.operands = [{'type': 'reg', 'value': 'ebx', 'size': 4}, {'type': 'reg', 'value': 'ebx', 'size': 4}]
+    r3.regs_read = ["ebx"]
+    r3.regs_write = ["eflags"]
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    tracker.add_trace(r3)
+    
+    tracker.path_tree = MagicMock()
+    tracker.path_tree.get_cached_slice.return_value = None
+    
+    ancestor = Ancestor(target="eax", modified_at_tick=1, instruction=r1)
+    slice_records2 = tracker.build_forward_slice(ancestor, 2)
+    
+    assert len(slice_records2) == 1
+    assert r2 in slice_records2
+
+def test_forward_slice_mem_killed():
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="[0x1000], eax", size=5)
+    r1.operands = [{'type': 'mem', 'disp': 0x1000, 'size': 4}, {'type': 'reg', 'value': 'eax', 'size': 4}]
+    r1.regs_read = ["eax"]
+    r1.mem_write = [0x1000]
+    
+    r2 = TraceRecord(tick=2, address=0x1005, mnemonic="mov", op_str="[0x1000], ebx", size=5)
+    r2.operands = [{'type': 'mem', 'disp': 0x1000, 'size': 4}, {'type': 'reg', 'value': 'ebx', 'size': 4}]
+    r2.mem_write = [0x1000]
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    
+    ancestor = Ancestor(target="eax", modified_at_tick=1, instruction=r1)
+    slice_records = tracker.build_forward_slice(ancestor, 1)
+    
+    # 0x1000 is tainted at 1, but killed at 2.
+    assert len(slice_records) == 1
+    assert r1 in slice_records
+
+
+def test_jump_value_error():
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="add", op_str="eax, 5", size=5)
+    r1.regs_read = ["eax"]
+    r1.regs_write = ["eax"]
+    
+    r2 = TraceRecord(tick=2, address=0x1005, mnemonic="cmp", op_str="eax, 5", size=3)
+    r2.regs_read = ["eax"]
+    r2.regs_write = ["eflags"]
+    
+    r3 = TraceRecord(tick=3, address=0x1008, mnemonic="je", op_str="rax", size=2) # Non-hex
+    r3.regs_read = ["eflags"]
+    
+    r4 = TraceRecord(tick=4, address=0x100a, mnemonic="mov", op_str="ebx, 1", size=5)
+    r4.regs_write = ["ebx"]
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    tracker.add_trace(r3)
+    tracker.add_trace(r4)
+    
+    # Forward
+    tracker.build_forward_slice("eax", 1)
+    
+    # Backward
+    tracker.build_backward_slice(Descendant("ebx", 4))
+
+def test_set_flags():
+    # Covers lines 207-209 and 312 (SET_FLAGS)
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="sete", op_str="al", size=3)
+    r1.regs_read = ["eflags"]
+    r1.regs_write = ["al"]
+    
+    r2 = TraceRecord(tick=2, address=0x1003, mnemonic="mov", op_str="ebx, eax", size=2)
+    r2.regs_read = ["eax"]
+    r2.regs_write = ["ebx"]
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    
+    # Backward
+    tracker.build_backward_slice(Descendant("al", 2))
+    
+    # Forward
+    tracker.build_forward_slice("flag_zf", 1)
+
+def test_forward_slice_cache_hit():
+    # Covers lines 242-243 (forward_cache hit)
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.regs_write = ["eax"]
+    tracker.add_trace(r1)
+    
+    # First run caches it
+    tracker.build_forward_slice("eax", 1)
+    # Second run hits cache
+    tracker.build_forward_slice("eax", 1)
+
+def test_forward_slice_early_break_and_missing_record():
+    # Covers lines 254-255 (not targets_to_track) and 259 (not record)
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="eax, 5", size=5)
+    r1.regs_write = ["eax"]
+    
+    r2 = TraceRecord(tick=2, address=0x1005, mnemonic="xor", op_str="eax, eax", size=2)
+    r2.operands = [{'type': 'reg', 'value': 'eax'}, {'type': 'reg', 'value': 'eax'}]
+    r2.regs_read = ["eax"]
+    r2.regs_write = ["eax"]
+    
+    r3 = TraceRecord(tick=3, address=0x1007, mnemonic="mov", op_str="ebx, 5", size=5)
+    
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+    tracker.add_trace(r3)
+    
+    # Intentionally remove tick 3 to trigger `not record` in tick loop
+    tracker.trace_history[2] = None 
+    
+    tracker.build_forward_slice("eax", 1, 3)
+
+def test_calculate_memory_access_size_fallback():
+    # Covers lines 480-484
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="[0x1000], eax", size=5)
+    # Missing 'size' in mem operand
+    r1.operands = [{'type': 'mem', 'disp': 0x1000}, {'type': 'reg', 'value': 'eax', 'size': 4}]
+    r1.regs_read = ["eax"]
+    r1.mem_write = [0x1000]
+    
+    tracker.add_trace(r1)
+    
+    # Backward memory tracking requires size calculation
+    tracker.build_backward_slice(Descendant(0x1000, 2))
