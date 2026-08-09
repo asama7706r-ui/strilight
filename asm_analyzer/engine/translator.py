@@ -478,7 +478,7 @@ class Z3Translator:
             elif len(ops) == 2 or len(ops) == 3:
                 dst = ops[0]
                 src1 = ops[1]
-                src2 = ops[2] if len(ops) == 3 else ops[1] # if 2 ops: dst = dst * src1
+                src2 = ops[2] if len(ops) == 3 else ops[0] # if 2 ops: dst = dst * src1
                 
                 dst_val, dst_size = self._read_operand(dst)
                 src1_val, _ = self._read_operand(src1)
@@ -664,7 +664,7 @@ class Z3Translator:
         
         for i, instr in enumerate(chronological_slice):
             next_instr = chronological_slice[i+1] if i + 1 < len(chronological_slice) else None
-            self.parse_instruction(instr, next_instr)
+            self.parse_instruction(instr)
 
         print("[+] Z3 Translation Complete. Assertions:")
         for assertion in self.solver.assertions():
