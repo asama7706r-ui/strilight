@@ -338,7 +338,7 @@ class ForwardSliceTracker:
                 
                 # Backward Fallback for unknown variables
                 if not reads_tracked_flag and not disable_fallback: # Ignore fallback for jumps (they just read flags)
-                    unknown_regs = [r for r in record.regs_read if r not in targets_to_track and not r.startswith("flag_") and r not in ['eip', 'rip', 'eflags', 'rflags']]
+                    unknown_regs = [r for r in record.regs_read if r not in targets_to_track and not r.startswith("flag_") and r not in {'eip', 'rip', 'eflags', 'rflags'}]
                     if unknown_regs:
                         print(f"  -> [Forward Backward-Fallback] Found unknown registers {unknown_regs} at Tick {record.tick}. Initiating backward trace!")
                         backward_tracer = BackwardSliceTracker(self.ctx)

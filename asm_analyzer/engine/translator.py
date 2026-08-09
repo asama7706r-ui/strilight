@@ -21,6 +21,12 @@ class Z3Translator:
         self.current_instr: TraceRecord = None
         self.mem_read_idx = 0
         self.mem_write_idx = 0
+        
+        # ⚡ Bolt Optimization: Pre-compute reverse register hierarchy mapping for O(1) lookups
+        self._reg_to_base = {}
+        for base, subs in REGISTER_HIERARCHY.items():
+            for sub in subs:
+                self._reg_to_base[sub] = base
 
     def _get_new_ssa_name(self, name: str) -> str:
         tick = self.current_instr.tick if self.current_instr else 0
@@ -138,11 +144,8 @@ class Z3Translator:
             op_str = op_dict['value']
             size = op_dict.get('size', 8) * 8
 
-            base_reg = op_str
-            for base, subs in REGISTER_HIERARCHY.items():
-                if op_str in subs:
-                    base_reg = base
-                    break
+            # ⚡ Bolt Optimization: Replace O(N) linear scan with O(1) hash map lookup
+            base_reg = self._reg_to_base.get(op_str, op_str)
 
             offset = 8 if op_str.endswith('h') and len(op_str) == 2 else 0
 
@@ -224,11 +227,8 @@ class Z3Translator:
             op_str = op_dict['value']
             reg_size = op_dict.get('size', 8) * 8
 
-            base_reg = op_str
-            for base, subs in REGISTER_HIERARCHY.items():
-                if op_str in subs:
-                    base_reg = base
-                    break
+            # ⚡ Bolt Optimization: Replace O(N) linear scan with O(1) hash map lookup
+            base_reg = self._reg_to_base.get(op_str, op_str)
 
             offset = 8 if op_str.endswith('h') and len(op_str) == 2 else 0
 
