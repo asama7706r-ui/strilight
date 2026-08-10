@@ -55,9 +55,13 @@ def main():
         
         translator = Z3Translator(memory_provider=core.se.mem_read)
         key_var = z3.BitVec("key_input", 32)
+        translator.target_vars.add(key_var)
+        translator.solver.add(key_var > 5000)
         
         # Clear previous assumptions
         check_key_start_tick = 0
+        
+
         for record in chronological_slice:
             if record.mnemonic == 'push' and 'rbp' in record.op_str:
                 check_key_start_tick = record.tick

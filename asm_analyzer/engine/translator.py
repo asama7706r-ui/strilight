@@ -21,6 +21,8 @@ class Z3Translator:
         self.current_instr: TraceRecord = None
         self.mem_read_idx = 0
         self.mem_write_idx = 0
+        self.target_vars = set()
+        self._taint_cache = {}
         
         # ⚡ Bolt Optimization: Pre-compute reverse register hierarchy mapping for O(1) lookups
         self._reg_to_base = {}
@@ -32,6 +34,31 @@ class Z3Translator:
         tick = self.current_instr.tick if self.current_instr else 0
         self.latest_versions[name] = tick
         return f"{name}_t{tick}"
+
+    def _is_tainted(self, expr) -> bool:
+        if not self.target_vars:
+            return False
+            
+        def walk(e):
+            e_id = e.hash()
+            if e_id in self._taint_cache:
+                return self._taint_cache[e_id]
+            
+            if z3.is_const(e) and e.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+                # Check if it matches any target variable
+                res = any(e.eq(t) for t in self.target_vars)
+                self._taint_cache[e_id] = res
+                return res
+            
+            for child in e.children():
+                if walk(child):
+                    self._taint_cache[e_id] = True
+                    return True
+                    
+            self._taint_cache[e_id] = False
+            return False
+            
+        return walk(expr)
 
     def _get_phys_reg(self, phys_name: str) -> z3.BitVecRef:
         if phys_name not in self.reg_state:
@@ -172,39 +199,81 @@ class Z3Translator:
             read_bytes = []
             
             # Smart Concretization Check
-            simplified_addr = z3.simplify(addr_ast)
+            simplified_addr = self._safe_simplify(addr_ast)
             is_concrete_addr = isinstance(simplified_addr, z3.BitVecNumRef)
             concrete_addr_val = simplified_addr.as_long() if is_concrete_addr else 0
             
+            # Concolic Memory Concretization
+            is_tainted_addr = self._is_tainted(addr_ast)
+            
+            if not is_concrete_addr and not is_tainted_addr and hasattr(self, 'current_instr') and self.current_instr and self.current_instr.mem_read:
+                concrete_addr_val = self.current_instr.mem_read[0]
+                addr_ast = z3.BitVecVal(concrete_addr_val, 64)
+                is_concrete_addr = True
+            elif is_tainted_addr:
+                self.solver.add(z3.UGT(addr_ast, 0x10000), z3.ULT(addr_ast, 0x00007FFFFFFFFFFF))
+            
             for i in range(size // 8):
-                byte_addr = addr_ast + i
+                byte_addr = self._safe_simplify(addr_ast + i)
                 
                 byte_ast = None
                 
-                # Fetch concrete byte if address is static and provider exists
-                if is_concrete_addr and self.memory_provider:
-                    try:
-                        concrete_byte = self.memory_provider(concrete_addr_val + i, 1)
-                        if concrete_byte:
-                            byte_val = int.from_bytes(concrete_byte, byteorder='little')
-                            byte_ast = z3.BitVecVal(byte_val, 8)
-                            if i == 0: # Print only once per read operation to avoid flooding
-                                print(f"  -> [Smart Concretization] Resolved static memory at {hex(concrete_addr_val)} (Size: {size} bits)")
-                    except Exception:
-                        pass # Fallback to symbolic if read fails
+                chain = []
+                for write_addr_ast, write_byte_ast, write_size in reversed(self.memory_writes):
+                    cond = (byte_addr == write_addr_ast)
+                    is_t = False
+                    is_f = False
+                    
+                    if isinstance(byte_addr, z3.BitVecNumRef) and isinstance(write_addr_ast, z3.BitVecNumRef):
+                        if byte_addr.as_long() == write_addr_ast.as_long():
+                            is_t = True
+                        else:
+                            is_f = True
+                    elif byte_addr.eq(write_addr_ast):
+                        is_t = True
+                    else:
+                        # VSA Pruning (Pointer Domain Pruning)
+                        if is_tainted_addr:
+                            self.solver.push()
+                            self.solver.add(cond)
+                            if self.solver.check() == z3.unsat:
+                                is_f = True
+                            self.solver.pop()
+
+                    if is_t:
+                        chain.append((True, write_byte_ast))
+                        break
+                    elif is_f:
+                        continue
+                    else:
+                        chain.append((cond, write_byte_ast))
                         
-                if byte_ast is None:
-                    # Start with an uninitialized symbolic memory variable for THIS BYTE
-                    mem_name = f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}"
-                    self.mem_read_idx += 1
-                    byte_ast = z3.BitVec(mem_name, 8)
-                    if i == 0:
-                        print(f"  -> [Symbolic Memory] Falling back to unknown for symbolic address at Tick {self.current_instr.tick}")
-                
-                # Chain with past byte writes chronologically
-                for write_addr_ast, write_byte_ast, write_size in self.memory_writes:
-                    condition = (byte_addr == write_addr_ast)
-                    byte_ast = z3.If(condition, write_byte_ast, byte_ast)
+                if not chain or chain[-1][0] is not True:
+                    # Fetch concrete byte if address is static and provider exists
+                    if is_concrete_addr and self.memory_provider:
+                        try:
+                            concrete_byte = self.memory_provider(concrete_addr_val + i, 1)
+                            if concrete_byte:
+                                byte_val = int.from_bytes(concrete_byte, byteorder='little')
+                                byte_ast = z3.BitVecVal(byte_val, 8)
+                                if i == 0: # Print only once per read operation to avoid flooding
+                                    print(f"  -> [Smart Concretization] Resolved static memory at {hex(concrete_addr_val)} (Size: {size} bits)")
+                        except Exception:
+                            pass # Fallback to symbolic if read fails
+                            
+                    if byte_ast is None:
+                        # Start with an uninitialized symbolic memory variable for THIS BYTE
+                        mem_name = f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}"
+                        self.mem_read_idx += 1
+                        byte_ast = z3.BitVec(mem_name, 8)
+                        if i == 0:
+                            print(f"  -> [Symbolic Memory] Falling back to unknown for symbolic address at Tick {self.current_instr.tick}")
+                else:
+                    byte_ast = chain.pop()[1]
+                    
+                while chain:
+                    cond, val = chain.pop()
+                    byte_ast = z3.If(cond, val, byte_ast)
                     
                 read_bytes.append(byte_ast)
                 
@@ -217,6 +286,31 @@ class Z3Translator:
             return result_ast, size
             
         return z3.BitVecVal(0, 64), 64
+
+    def _is_concrete_tree(self, ast, memo=None):
+        if memo is None: memo = {}
+        ast_id = ast.get_id()
+        if ast_id in memo: return memo[ast_id]
+        
+        if isinstance(ast, z3.BitVecNumRef):
+            memo[ast_id] = True
+            return True
+        if z3.is_const(ast):
+            memo[ast_id] = False
+            return False
+            
+        for child in ast.children():
+            if not self._is_concrete_tree(child, memo):
+                memo[ast_id] = False
+                return False
+                
+        memo[ast_id] = True
+        return True
+
+    def _safe_simplify(self, ast):
+        if self._is_concrete_tree(ast):
+            return z3.simplify(ast)
+        return ast
 
     def _write_operand(self, op_dict: dict, native_val: z3.BitVecRef):
         op_type = op_dict['type']
@@ -256,10 +350,14 @@ class Z3Translator:
                 else:
                     new_phys_val = z3.Concat(*parts)
 
-            ssa_name = self._get_new_ssa_name(base_reg)
-            new_var = z3.BitVec(ssa_name, 64)
-            self.solver.add(new_var == new_phys_val)
-            self.reg_state[base_reg] = new_var
+            new_phys_val = self._safe_simplify(new_phys_val)
+            if isinstance(new_phys_val, z3.BitVecNumRef):
+                self.reg_state[base_reg] = new_phys_val
+            else:
+                ssa_name = self._get_new_ssa_name(base_reg)
+                new_var = z3.BitVec(ssa_name, 64)
+                self.solver.add(new_var == new_phys_val)
+                self.reg_state[base_reg] = new_var
             return
                 
         # 2. Memory Write
@@ -274,6 +372,15 @@ class Z3Translator:
                 if index_ast.size() != 64: index_ast = z3.ZeroExt(64 - index_ast.size(), index_ast)
                 write_addr_ast = write_addr_ast + (index_ast * op_dict['scale'])
             
+            # Concolic Memory Concretization
+            is_tainted_addr = self._is_tainted(write_addr_ast)
+            
+            if not is_tainted_addr and hasattr(self, 'current_instr') and self.current_instr and self.current_instr.mem_write:
+                concrete_addr_val = self.current_instr.mem_write[0]
+                write_addr_ast = z3.BitVecVal(concrete_addr_val, 64)
+            elif is_tainted_addr:
+                self.solver.add(z3.UGT(write_addr_ast, 0x10000), z3.ULT(write_addr_ast, 0x00007FFFFFFFFFFF))
+
             mem_size = op_dict.get('size', size//8) * 8
             if mem_size == 0: mem_size = size
             
@@ -286,7 +393,7 @@ class Z3Translator:
             # Byte-Level Write
             for i in range(mem_size // 8):
                 byte_val = z3.Extract(i * 8 + 7, i * 8, val)
-                self.memory_writes.append((write_addr_ast + i, byte_val, 8))
+                self.memory_writes.append((self._safe_simplify(write_addr_ast + i), byte_val, 8))
             return
 
     def _match_sizes(self, dst_val: z3.BitVecRef, src_val: z3.BitVecRef) -> Tuple[z3.BitVecRef, z3.BitVecRef]:
@@ -507,7 +614,7 @@ class Z3Translator:
                 # Byte-Level Write directly to symbolic rsp_new
                 for i in range(src_size // 8):
                     byte_val = z3.Extract(i * 8 + 7, i * 8, src_val)
-                    self.memory_writes.append((rsp_new + i, byte_val, 8))
+                    self.memory_writes.append((self._safe_simplify(rsp_new + i), byte_val, 8))
                 
         elif instr.mnemonic == 'pop':
             if len(ops) == 1:
@@ -518,11 +625,40 @@ class Z3Translator:
                 # Read from memory symbolically at rsp_val
                 read_bytes = []
                 for i in range(dst_size // 8):
-                    byte_addr = rsp_val + i
-                    byte_ast = z3.BitVec(f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}", 8)
-                    self.mem_read_idx += 1
-                    for write_addr_ast, write_byte_ast, write_size in self.memory_writes:
-                        byte_ast = z3.If(byte_addr == write_addr_ast, write_byte_ast, byte_ast)
+                    byte_addr = self._safe_simplify(rsp_val + i)
+                    
+                    chain = []
+                    for write_addr_ast, write_byte_ast, write_size in reversed(self.memory_writes):
+                        cond = (byte_addr == write_addr_ast)
+                        is_t = False
+                        is_f = False
+                        
+                        if isinstance(byte_addr, z3.BitVecNumRef) and isinstance(write_addr_ast, z3.BitVecNumRef):
+                            if byte_addr.as_long() == write_addr_ast.as_long():
+                                is_t = True
+                            else:
+                                is_f = True
+                        elif byte_addr.eq(write_addr_ast):
+                            is_t = True
+
+                        if is_t:
+                            chain.append((True, write_byte_ast))
+                            break
+                        elif is_f:
+                            continue
+                        else:
+                            chain.append((cond, write_byte_ast))
+                            
+                    if not chain or chain[-1][0] is not True:
+                        byte_ast = z3.BitVec(f"SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}", 8)
+                        self.mem_read_idx += 1
+                    else:
+                        byte_ast = chain.pop()[1]
+                        
+                    while chain:
+                        cond, val = chain.pop()
+                        byte_ast = z3.If(cond, val, byte_ast)
+                        
                     read_bytes.append(byte_ast)
                     
                 if len(read_bytes) == 1:
@@ -587,7 +723,7 @@ class Z3Translator:
             rip_val = z3.BitVecVal(instr.address + instr.size, 64)
             for i in range(8):
                 byte_val = z3.Extract(i * 8 + 7, i * 8, rip_val)
-                self.memory_writes.append((rsp_new + i, byte_val, 8))
+                self.memory_writes.append((self._safe_simplify(rsp_new + i), byte_val, 8))
                 
             is_external = False
             if 'rax' in instr.regs_write:
