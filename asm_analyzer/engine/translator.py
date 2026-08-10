@@ -39,26 +39,27 @@ class Z3Translator:
         if not self.target_vars:
             return False
             
-        def walk(e):
-            e_id = e.hash()
-            if e_id in self._taint_cache:
-                return self._taint_cache[e_id]
+        stack = [(expr, False)]
+        
+        while stack:
+            curr, children_processed = stack.pop()
+            c_id = curr.hash()
             
-            if z3.is_const(e) and e.decl().kind() == z3.Z3_OP_UNINTERPRETED:
-                # Check if it matches any target variable
-                res = any(e.eq(t) for t in self.target_vars)
-                self._taint_cache[e_id] = res
-                return res
-            
-            for child in e.children():
-                if walk(child):
-                    self._taint_cache[e_id] = True
-                    return True
+            if c_id in self._taint_cache:
+                continue
+                
+            if not children_processed:
+                if z3.is_const(curr) and curr.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+                    self._taint_cache[c_id] = any(curr.eq(t) for t in self.target_vars)
+                    continue
                     
-            self._taint_cache[e_id] = False
-            return False
-            
-        return walk(expr)
+                stack.append((curr, True))
+                for child in curr.children():
+                    stack.append((child, False))
+            else:
+                self._taint_cache[c_id] = any(self._taint_cache[c.hash()] for c in curr.children())
+                
+        return self._taint_cache[expr.hash()]
 
     def _get_phys_reg(self, phys_name: str) -> z3.BitVecRef:
         if phys_name not in self.reg_state:
@@ -211,7 +212,7 @@ class Z3Translator:
                 addr_ast = z3.BitVecVal(concrete_addr_val, 64)
                 is_concrete_addr = True
             elif is_tainted_addr:
-                self.solver.add(z3.UGT(addr_ast, 0x10000), z3.ULT(addr_ast, 0x00007FFFFFFFFFFF))
+                self.solver.add(z3.UGE(addr_ast, 0x10000), z3.ULE(addr_ast, 0x00007FFFFFFFFFFF))
             
             for i in range(size // 8):
                 byte_addr = self._safe_simplify(addr_ast + i)
@@ -379,7 +380,7 @@ class Z3Translator:
                 concrete_addr_val = self.current_instr.mem_write[0]
                 write_addr_ast = z3.BitVecVal(concrete_addr_val, 64)
             elif is_tainted_addr:
-                self.solver.add(z3.UGT(write_addr_ast, 0x10000), z3.ULT(write_addr_ast, 0x00007FFFFFFFFFFF))
+                self.solver.add(z3.UGE(write_addr_ast, 0x10000), z3.ULE(write_addr_ast, 0x00007FFFFFFFFFFF))
 
             mem_size = op_dict.get('size', size//8) * 8
             if mem_size == 0: mem_size = size
