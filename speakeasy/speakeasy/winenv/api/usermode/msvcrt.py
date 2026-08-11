@@ -228,7 +228,7 @@ class Msvcrt(api.ApiHandler):
         if _Argv:
             argv_list = [(a + "\x00").encode("utf-8") for a in _argv]
             array_size = ptr_size * (len(argv_list) + 1)
-            total = sum([len(a) for a in argv_list]) + array_size
+            total = sum(len(a) for a in argv_list) + array_size
 
             arg_mem = self.mem_alloc(size=total, tag="api.argv")
             pptr = arg_mem
@@ -294,7 +294,7 @@ class Msvcrt(api.ApiHandler):
 
         argv = [(a + "\x00\x00\x00\x00").encode("utf-16le") for a in _argv]
         array_size = ptr_size * (len(argv) + 2)
-        total = sum([len(a) for a in argv])
+        total = sum(len(a) for a in argv)
         total += array_size
 
         sptr = 0
@@ -326,7 +326,7 @@ class Msvcrt(api.ApiHandler):
         argv = [(a + "\x00\x00\x00\x00").encode("utf-8") for a in _argv]
 
         array_size = ptr_size * (len(argv) + 2)
-        total = sum([len(a) for a in argv])
+        total = sum(len(a) for a in argv)
         total += array_size
 
         sptr = 0
