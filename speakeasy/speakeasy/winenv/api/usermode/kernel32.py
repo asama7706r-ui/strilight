@@ -53,6 +53,30 @@ class Kernel32(api.ApiHandler):
     apihook = api.ApiHandler.apihook
     impdata = api.ApiHandler.impdata
 
+    def _get_file_attrs(self, emu, target):
+        fm = emu.get_file_manager()
+        f = fm.get_file_from_path(target)
+        
+        attrs = 0
+        if f and hasattr(f, "config") and f.config:
+            if isinstance(f.config, dict):
+                attrs = f.config.get("attributes", 0)
+            else:
+                attrs = getattr(f.config, "attributes", 0)
+        
+        if not attrs:
+            fconf = fm.get_emu_file(target)
+            if fconf:
+                if isinstance(fconf, dict):
+                    attrs = fconf.get("attributes", 0)
+                else:
+                    attrs = getattr(fconf, "attributes", 0)
+                    
+        if not attrs:
+            attrs = windefs.FILE_ATTRIBUTE_NORMAL
+            
+        return attrs
+
     def __init__(self, emu):
 
         super().__init__(emu)
@@ -3456,7 +3480,7 @@ class Kernel32(api.ApiHandler):
         target = self.read_mem_string(fn, cw)
         argv[0] = target
         if self.does_file_exist(target):
-            rv = windefs.FILE_ATTRIBUTE_NORMAL
+            rv = self._get_file_attrs(emu, target)
         return rv
 
     @apihook("GetFileAttributesEx", argc=3)
@@ -3484,8 +3508,8 @@ class Kernel32(api.ApiHandler):
 
         file_data = k32types.WIN32_FILE_ATTRIBUTE_DATA(emu.get_ptr_size())
 
-        # Set WIN32_FILE_ATTRIBUTE_DATA.dwFileAttributes to Normal
-        file_data.dwFileAttributes = k32types.FILE_ATTRIBUTE_NORMAL
+        # Set WIN32_FILE_ATTRIBUTE_DATA.dwFileAttributes
+        file_data.dwFileAttributes = self._get_file_attrs(emu, filename)
 
         # Set WIN32_FILE_ATTRIBUTE_DATA.ftCreationTime + .ftLastAccessTime + .ftLastWriteTime,
         # using current date time
@@ -3799,7 +3823,11 @@ class Kernel32(api.ApiHandler):
         argv[0] = target
 
         if emu.does_file_exist(target):
-            # FIXME : does not handle read-only attribute
+            attrs = self._get_file_attrs(emu, target)
+            if attrs & windefs.FILE_ATTRIBUTE_READONLY:
+                emu.set_last_error(windefs.ERROR_ACCESS_DENIED)
+                return 0
+            
             emu.file_delete(target)
             return 1
         else:
@@ -3936,9 +3964,22 @@ class Kernel32(api.ApiHandler):
 
         f = self.file_get(hFile)
         if f:
-            # TODO add high offset, log access?
-            f.seek(lDistanceToMove, dwMoveMethod)
+            if lpDistanceToMoveHigh:
+                high_val = int.from_bytes(self.mem_read(lpDistanceToMoveHigh, 4), "little", signed=True)
+                distance_to_move = (high_val << 32) | (lDistanceToMove & 0xFFFFFFFF)
+            else:
+                distance_to_move = lDistanceToMove
+
+            f.seek(distance_to_move, dwMoveMethod)
             rv = f.tell()
+
+            self.record_file_access_event(f.path, FILE_READ)
+
+            if lpDistanceToMoveHigh:
+                high_rv = (rv >> 32) & 0xFFFFFFFF
+                self.mem_write(lpDistanceToMoveHigh, high_rv.to_bytes(4, "little"))
+                rv = rv & 0xFFFFFFFF
+
             emu.set_last_error(windefs.ERROR_SUCCESS)
 
         return rv
@@ -6119,10 +6160,34 @@ class Kernel32(api.ApiHandler):
 
         # Working from example "ddd, dd MMM yyyy "; TODO: expand this
         date = datetime.date(sys_time.wYear, sys_time.wMonth, sys_time.wDay)
-        date_format = date_format.replace("ddd", "%a")
-        date_format = date_format.replace("dd", "%d")
-        date_format = date_format.replace("MMM", "%b")
-        date_format = date_format.replace("yyyy", "%Y")
+        
+        date_format = date_format.replace("dddd", "\x01")
+        date_format = date_format.replace("ddd", "\x02")
+        date_format = date_format.replace("dd", "\x03")
+        date_format = date_format.replace("d", "\x04")
+        
+        date_format = date_format.replace("MMMM", "\x05")
+        date_format = date_format.replace("MMM", "\x06")
+        date_format = date_format.replace("MM", "\x07")
+        date_format = date_format.replace("M", "\x08")
+        
+        date_format = date_format.replace("yyyy", "\x09")
+        date_format = date_format.replace("yy", "\x0a")
+        date_format = date_format.replace("y", "\x0b")
+
+        date_format = date_format.replace("\x01", "%A")
+        date_format = date_format.replace("\x02", "%a")
+        date_format = date_format.replace("\x03", "%d")
+        date_format = date_format.replace("\x04", str(date.day))
+        
+        date_format = date_format.replace("\x05", "%B")
+        date_format = date_format.replace("\x06", "%b")
+        date_format = date_format.replace("\x07", "%m")
+        date_format = date_format.replace("\x08", str(date.month))
+        
+        date_format = date_format.replace("\x09", "%Y")
+        date_format = date_format.replace("\x0a", "%y")
+        date_format = date_format.replace("\x0b", str(date.year % 100))
 
         try:
             date_str = date.strftime(date_format)

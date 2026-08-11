@@ -347,7 +347,6 @@ def test_translator_read_operand_complex_mem():
     
     # Because rbx and rcx are variables, addr_ast is symbolic initially unless evaluated by Z3 solver directly inside parse_instruction (which it does via z3.simplify, but bitvec simplify might not completely concretize unless solver is run).
     # We just ensure it doesn't crash and correctly builds the memory expression.
-    # val = get_value(translator, "rax")
     assert True
 
 def test_translator_memory_writes_chaining():
@@ -576,9 +575,9 @@ def test_translator_call_ret():
 def test_translator_cmpxchg():
     translator = Z3Translator()
     
-    # cmpxchg [0x1000], ebx 
-    # if eax == [0x1000] -> [0x1000] = ebx, ZF=1
-    # else -> eax = [0x1000], ZF=0
+    # Test cmpxchg instruction logic.
+    # When eax matches the memory at 0x1000, the value of ebx is written to memory and the zero flag is set.
+    # Otherwise, the memory value is loaded into eax and the zero flag is cleared.
     cmpxchg_rec = RecordFactory.create_trace_record(tick=1, address=0x1000, mnemonic="cmpxchg", op_str="dword ptr [0x1000], ebx", size=5)
     cmpxchg_rec.operands = [
         RecordFactory.create_mem_operand(disp=0x1000, size=4, base=None, index=None, scale=1),
