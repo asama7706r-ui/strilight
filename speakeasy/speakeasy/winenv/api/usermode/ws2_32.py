@@ -1,7 +1,7 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 import re
 import struct
-from socket import htonl, htons, inet_aton, inet_ntoa, inet_ntop, inet_pton, ntohl, ntohs
+from socket import AF_INET, AF_INET6, htonl, htons, inet_aton, inet_ntoa, inet_ntop, inet_pton, ntohl, ntohs
 from typing import Any
 
 import speakeasy.winenv.arch as _arch
@@ -509,16 +509,26 @@ class Ws2_32(api.ApiHandler):
         fam_str = winsock.get_addr_family(family)
         argv[0] = fam_str
 
-        # TODO: implement case AF_INET6
         if fam_str == "AF_INET":
             ipv4_bytes = self.mem_read(pAddr, 4)
             argv[1] = int.from_bytes(ipv4_bytes, "big")
             try:
-                ipv4_str = inet_ntop(family, ipv4_bytes)
+                ipv4_str = inet_ntop(AF_INET, ipv4_bytes)
             except OSError:
                 return 0
 
             self.write_string(ipv4_str, pStringBuf)
+            return pStringBuf
+
+        elif fam_str == "AF_INET6":
+            ipv6_bytes = self.mem_read(pAddr, 16)
+            argv[1] = int.from_bytes(ipv6_bytes, "big")
+            try:
+                ipv6_str = inet_ntop(AF_INET6, ipv6_bytes)
+            except OSError:
+                return 0
+
+            self.write_string(ipv6_str, pStringBuf)
             return pStringBuf
 
         return 0
@@ -538,16 +548,26 @@ class Ws2_32(api.ApiHandler):
         fam_str = winsock.get_addr_family(family)
         argv[0] = fam_str
 
-        # TODO: implement case AF_INET6
         if fam_str == "AF_INET":
             ipv4_str = self.read_string(pszAddrString)
             argv[1] = ipv4_str
             try:
-                ipv4_bytes = inet_pton(family, ipv4_str)
+                ipv4_bytes = inet_pton(AF_INET, ipv4_str)
             except OSError:
                 return 0
 
             self.mem_write(pAddrBuf, ipv4_bytes)
+            return 1
+
+        elif fam_str == "AF_INET6":
+            ipv6_str = self.read_string(pszAddrString)
+            argv[1] = ipv6_str
+            try:
+                ipv6_bytes = inet_pton(AF_INET6, ipv6_str)
+            except OSError:
+                return 0
+
+            self.mem_write(pAddrBuf, ipv6_bytes)
             return 1
 
         return 0
