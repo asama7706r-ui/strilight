@@ -425,13 +425,17 @@ class Wininet(api.ApiHandler):
         if not wini:
             return 0
         crack = urlparse(url)
-        if crack.scheme == "http":
-            # FIXME : parse port in url netloc
+        if crack.port:
+            port = crack.port
+        elif crack.scheme == "http":
             port = 80
         else:
             port = 443
-        self.record_http_event(crack.netloc, port, headers=lpszHeaders)
-        sess = wini.new_session(crack.netloc, port, "", "", "", defs, dwContext)
+
+        # crack.hostname contains the host part without the port
+        hostname = crack.hostname or crack.netloc
+        self.record_http_event(hostname, port, headers=lpszHeaders)
+        sess = wini.new_session(hostname, port, "", "", "", defs, dwContext)
         if not sess:
             return 0
         req = sess.new_request("GET", url, None, None, None, defs, dwContext)
