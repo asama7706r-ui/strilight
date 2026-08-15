@@ -22,6 +22,16 @@ int check_key(int key) {
   // Math operation to track
   int magic = (key ^ 0x55) * 3;
 
+  // Trap 3: The Symbolic Loop Trap
+  // A loop that manipulates the magic value.
+  // The engine must compress this loop and translate it into a mathematical
+  // equation (e.g. magic_new = magic_old + 4 * 15)
+  int loop_counter = 0;
+  while (loop_counter < 100000) {
+    magic += 4;
+    loop_counter++;
+  }
+
   // Trap 2: The Partial Overlap Trap
   // Write 4 bytes, write 2 bytes in the middle, read 4 bytes.
   // Engine checking `addr == write_addr` will fail.
@@ -54,7 +64,7 @@ int get_input() {
 }
 
 int main(int argc, char **argv) {
-  int key = 1073743749;
+  int key = 1117849577;
 
   if (check_key(key)) {
     printf("ACCESS GRANTED - YOU DEFEATED THE BOSS!\n");

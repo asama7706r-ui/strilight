@@ -9,7 +9,7 @@ class Z3Translator:
 
     def __init__(self, memory_provider=None):
         self.memory_provider = memory_provider
-        self.solver = z3.Solver()
+        self.solver = z3.Optimize()
         self.reg_state: Dict[str, z3.BitVecRef] = {}
         self.flag_state: Dict[str, z3.BoolRef] = {}
         self.latest_versions: Dict[str, int] = {}
@@ -26,7 +26,10 @@ class Z3Translator:
         self.handlers = {'mov': self._handle_mov, 'movzx': self._handle_mov, 'movsx': self._handle_mov, 'movsxd': self._handle_mov, 'lea': self._handle_lea, 'add': self._handle_math, 'sub': self._handle_math, 'xor': self._handle_math, 'and': self._handle_math, 'or': self._handle_math, 'cmp': self._handle_math, 'test': self._handle_math, 'inc': self._handle_inc_dec, 'dec': self._handle_inc_dec, 'shl': self._handle_shift, 'shr': self._handle_shift, 'sar': self._handle_shift, 'mul': self._handle_mul, 'imul': self._handle_mul, 'push': self._handle_push, 'pop': self._handle_pop, 'cdqe': self._handle_cdqe, 'jmp': self._handle_jmp, 'call': self._handle_call, 'ret': self._handle_ret, 'cmpxchg': self._handle_cmpxchg, 'lock cmpxchg': self._handle_cmpxchg, 'xchg': self._handle_xchg, 'lock xchg': self._handle_xchg, 'je': self._handle_jcc, 'jz': self._handle_jcc, 'jne': self._handle_jcc, 'jnz': self._handle_jcc, 'ja': self._handle_jcc, 'jnbe': self._handle_jcc, 'jae': self._handle_jcc, 'jnb': self._handle_jcc, 'jnc': self._handle_jcc, 'jb': self._handle_jcc, 'jc': self._handle_jcc, 'jnae': self._handle_jcc, 'jbe': self._handle_jcc, 'jna': self._handle_jcc, 'jg': self._handle_jcc, 'jnle': self._handle_jcc, 'jge': self._handle_jcc, 'jnl': self._handle_jcc, 'jl': self._handle_jcc, 'jnge': self._handle_jcc, 'jle': self._handle_jcc, 'jng': self._handle_jcc, 'js': self._handle_jcc, 'jns': self._handle_jcc, 'jo': self._handle_jcc, 'jno': self._handle_jcc, 'sete': self._handle_setcc, 'setz': self._handle_setcc, 'setne': self._handle_setcc, 'setnz': self._handle_setcc, 'seta': self._handle_setcc, 'setnbe': self._handle_setcc, 'setae': self._handle_setcc, 'setnb': self._handle_setcc, 'setnc': self._handle_setcc, 'setb': self._handle_setcc, 'setc': self._handle_setcc, 'setnae': self._handle_setcc, 'setbe': self._handle_setcc, 'setna': self._handle_setcc, 'setg': self._handle_setcc, 'setnle': self._handle_setcc, 'setge': self._handle_setcc, 'setnl': self._handle_setcc, 'setl': self._handle_setcc, 'setnge': self._handle_setcc, 'setle': self._handle_setcc, 'setng': self._handle_setcc, 'sets': self._handle_setcc, 'setns': self._handle_setcc, 'seto': self._handle_setcc, 'setno': self._handle_setcc}
 
     def _get_new_ssa_name(self, name: str) -> str:
-        tick = self.current_instr.tick if self.current_instr else 0
+        if self.current_instr:
+            tick = self.current_instr.tick
+        else:
+            tick = self.latest_versions.get(name, 0) + 1
         self.latest_versions[name] = tick
         return f'{name}_t{tick}'
 
@@ -702,16 +705,91 @@ class Z3Translator:
         self.mem_write_idx = 0
         handler = self.handlers.get(instr.mnemonic)
         if handler:
+            print(f"    [Z3Translator] Parsing {instr.mnemonic} {instr.op_str}")
             handler(instr)
         else:
             print(f"[!] Z3Translator WARNING: Unhandled instruction '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}. Mathematical state may be lost!")
 
-    def translate_slice(self, slice_records: List[TraceRecord]):
+    def translate_slice(self, slice_records: List):
         print('[+] Starting Z3 Translation Phase (Native Width Model)...')
+        from asm_analyzer.engine.vsa_evaluator import LoopSummary
         chronological_slice = list(reversed(slice_records))
-        for i, instr in enumerate(chronological_slice):
-            next_instr = chronological_slice[i + 1] if i + 1 < len(chronological_slice) else None
-            self.parse_instruction(instr)
+        for i, item in enumerate(chronological_slice):
+            if isinstance(item, LoopSummary):
+                self.translate_loop_summary(item, item.iterations)
+            else:
+                next_instr = chronological_slice[i + 1] if i + 1 < len(chronological_slice) else None
+                self.parse_instruction(item)
         print('[+] Z3 Translation Complete. Assertions:')
         for assertion in self.solver.assertions():
             print(f'  {assertion}')
+
+    def translate_loop_summary(self, summary, max_iterations: int):
+        from asm_analyzer.engine.vsa_evaluator import LoopSummary
+        if not isinstance(summary, LoopSummary):
+            return
+
+        # 1. Generate Symbolic N
+        N = z3.BitVec('LoopCounter', 64)
+        
+        # 2. Bound N (0 <= N)
+        self.solver.add(z3.UGE(N, 0))
+        
+        # 3. Optimize N (User's instruction: Minimize N to find the shortest path)
+        if hasattr(self.solver, 'minimize'):
+            self.solver.minimize(N)
+            
+        # Temporarily clear current_instr to prevent _write_operand from overriding addresses
+        old_instr = getattr(self, 'current_instr', None)
+        self.current_instr = None
+            
+        # 4. Apply Strides: Reg_new = Reg_old + Delta * N
+        print(f"  [Z3Translator] Loop Summary Deltas: {summary.deltas}")
+        for reg_name, delta in summary.deltas.items():
+            if reg_name.startswith("MEM_"):
+                parts = reg_name.split("_")
+                addr = int(parts[1])
+                size_bits = int(parts[2])
+                t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
+                if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
+                t_after = t_before + delta * N if delta != 0 else t_before
+                self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, z3.Extract(size_bits - 1, 0, t_after))
+                continue
+                
+            base_reg = self._reg_to_base.get(reg_name, reg_name)
+            t_before = self._get_phys_reg(base_reg)
+            
+            # Clobber and assert Loop Equation
+            self._clobber_register(base_reg)
+            t_after = self._get_phys_reg(base_reg)
+            
+            if delta != 0:
+                self.solver.add(t_after == t_before + delta * N)
+            else:
+                self.solver.add(t_after == t_before)
+
+        # 5. Handle Constant Sets from Loop body
+        print(f"  [Z3Translator] Loop Summary Constant Sets: {summary.constant_sets}")
+        for reg_name, const_val in summary.constant_sets.items():
+            if reg_name.startswith("MEM_"):
+                parts = reg_name.split("_")
+                addr = int(parts[1])
+                size_bits = int(parts[2])
+                const_ast = z3.BitVecVal(const_val, size_bits)
+                self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, const_ast)
+                continue
+                
+            base_reg = self._reg_to_base.get(reg_name, reg_name)
+            self._clobber_register(base_reg)
+            new_reg = self._get_phys_reg(base_reg)
+            self.solver.add(new_reg == const_val)
+            
+        # Restore current_instr
+        self.current_instr = old_instr
+            
+        # 6. Apply Exit Condition via SSA!
+        # By translating the exit records, Z3 automatically uses the updated SSA registers 
+        # (e.g. ecx_t1, edx_t0) to create the link between LoopCounter and the tainted variables!
+        if hasattr(summary, 'exit_records') and summary.exit_records:
+            for record in summary.exit_records:
+                self.parse_instruction(record)

@@ -19,3 +19,35 @@ trigger: always_on
 3. **The "Clean Code" Performance Trap:** 
    I reviewed another agent's code that tried to make memory equality checks "cleaner" by using `z3.simplify(cond)` inside the inner memory loop. It looked mathematically elegant but completely destroyed the engine's speed.
    **The shortcut:** This engine’s philosophy is "Build ugly ASTs in Python incredibly fast, and let Z3's C++ core simplify them at the very end." Never call Z3's C++ simplifier inside a hot Python loop. Use fast, native Python type-checking (`isinstance(..., z3.BitVecNumRef)`) to filter out concrete values instead.
+
+### 📝 Agent-to-Agent Handover: VSA Engine & Taint Architecture
+**From:** Antigravity (Session: Loop Compression & VSA)
+**To:** Future Agents
+
+**Critical Architectural Directives (Do NOT violate these):**
+
+4. **The VSA Disjoint Set & K-Limit System (Beating Z3's Bit-blasting):**
+   Never send massive, unpruned bitwise loops directly to Z3. Z3 will bit-blast them and cause an OOM crash. We built a Value Set Analysis (VSA) engine in `interval.py`.
+   **The Rule (Corrected):** We use **Bounded Disjoint Sets** (lists of intervals) to handle complex operations like modulo and shifts with surgical precision. To prevent Interval Explosion (OOM), we enforce a strict **K-Limit** (e.g., max 4 fragments). If the limit is exceeded, we apply a **Convex Hull** merge, falling back on the Dual-Mask system (`known_mask` and `known_value`) to preserve precision inside the merged bounds.
+
+5. **Taint Stratification (Preventing Path Explosion):**
+   When implementing Control Dependency Tracking, do NOT opportunistically track branches for *every* variable in the taint set (e.g., loop counters). This causes massive Path Explosion. 
+   **The Rule:** Differentiate between **Primary Taints** (sensitive user input) and **Secondary Taints** (multipliers/counters). Only capture `cmp/jcc` branches that directly read Primary Taints.
+
+6. **Unsigned Hacker's Delight:**
+   The `Interval` class logic must remain strictly **Unsigned**. Bitwise operations have no concept of sign. Rely purely on physical modulo arithmetic (`& physical_max`). Signedness is only relevant later at the AST/Instruction Semantic level.
+
+### 📝 Agent-to-Agent Handover: Symbolic Memory vs Concrete Trace
+**From:** Antigravity (Session: Loop Translation & Symbolic Memory Overwrites)
+**To:** Future Agents
+
+**Architectural Traps in the Intermediate Engine (Do NOT repeat my mistakes):**
+
+7. **The `current_instr` Memory Override Trap (The "Smart Feature" Backfire):**
+   When translating flattened traces in `Z3Translator`, we use a feature in `_write_operand` that overrides symbolic addresses with the concrete address from `self.current_instr.mem_write[0]` to prevent pointer aliasing bugs. 
+   **The Trap:** When you inject mathematical summaries (like `LoopSummary.deltas`), they are *not* physical instructions, but you might forget to clear `self.current_instr`. This caused the strides of unrelated variables (like `magic`) to overwrite the loop counter's memory location because `current_instr` was stuck on `mov [rbp-8], 0`!
+   **The Rule:** If you are translating synthetic or abstract operations (like VSA summaries) that provide absolute concrete memory addresses (e.g., `MEM_20971136_32`), **you MUST temporarily set `self.current_instr = None`**. Do not let the instruction translator assume the abstract state is tied to the last executed trace instruction.
+
+8. **Loop Evaluator != Z3 Translator (Who reads the flags?):**
+   Do not confuse the duties of the `LoopEvaluator` (VSA) with `Z3Translator`. 
+   **The Rule:** The `LoopEvaluator` is a *Data-Flow Engine*; it NEVER reads conditional flags (`ZF`, `CF`) and NEVER executes `jcc`. It only simulates arithmetic to extract Strides (`deltas`). It merely packages the exit `cmp/jcc` instructions into `exit_records`. It is the **`Z3Translator`** that later parses these records, generates the flags in SSA form, and builds the mathematical `LoopCounter` equations.

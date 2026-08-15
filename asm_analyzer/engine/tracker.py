@@ -62,13 +62,72 @@ class BackwardSliceTracker:
             print(f"[*] Starting Backward Slicing for '{descendant.target}' from Tick {descendant.at_tick}")
             hunting_for_control_dependency = False
             
-            for tick in range(descendant.at_tick, 0, -1):
+            trace_list = self.ctx.compressed_trace if self.ctx.compressed_trace is not None else self.ctx.trace_history
+            
+            # Find the starting index in trace_list based on descendant.at_tick
+            start_idx = len(trace_list) - 1
+            for i, item in enumerate(reversed(trace_list)):
+                item_tick = item.tick if hasattr(item, 'tick') else item.end_tick
+                if item_tick <= descendant.at_tick:
+                    start_idx = len(trace_list) - 1 - i
+                    break
+
+            for i in range(start_idx, -1, -1):
                 if not targets_to_track and not hunting_for_control_dependency:
                     break # Everything for this descendant is resolved
                     
-                record = self.ctx.get_trace_at_tick(tick)
-                if not record:
-                    continue
+                item = trace_list[i]
+                
+                # Check for LoopBlock and perform Lazy Skip
+                if hasattr(item, 'iterations'):
+                    block = item
+                    # Lazy Evaluation: Does this loop affect us?
+                    loop_modifies_target = False
+                    for b_record in block.body:
+                        tracked_bases = {self.ctx.REG_TO_BASE.get(t, t) for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")}
+                        if any(self.ctx.REG_TO_BASE.get(r, r) in tracked_bases for r in b_record.regs_write if not r.startswith("flag_")):
+                            loop_modifies_target = True
+                            break
+                        
+                        tracked_mem = [t for t in targets_to_track if isinstance(t, int)]
+                        if tracked_mem and b_record.mem_write:
+                            loop_modifies_target = True
+                            break
+                        
+                        tracked_flags = [t for t in targets_to_track if isinstance(t, str) and t.startswith("flag_")]
+                        if tracked_flags and any(r in b_record.regs_write for r in ["eflags", "rflags"]):
+                            loop_modifies_target = True
+                            break
+
+                    if not loop_modifies_target:
+                        print(f"  -> [Lazy Skip] Backward tracker skipping irrelevant loop block spanning Ticks {block.start_tick}->{block.end_tick}")
+                        continue
+                    else:
+                        from asm_analyzer.engine.vsa_evaluator import LoopEvaluator
+                        print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets {targets_to_track}")
+                        evaluator = LoopEvaluator()
+                        summary = evaluator.evaluate(block)
+                        summary.tick = block.start_tick  # Assign a tick for chronological sorting
+                        
+                        # Add the summary to the slice so Z3 can translate it later
+                        slice_instructions.append(summary)
+                        
+                        # Domino Effect (Taint Tracking):
+                        # If the loop affects our targets, we must also track the variables
+                        # that control the loop's exit condition!
+                        if hasattr(summary, 'exit_records') and summary.exit_records:
+                            for ex_record in summary.exit_records:
+                                for reg in ex_record.regs_read:
+                                    if reg not in ["eflags", "rflags", "eip", "rip"]:
+                                        targets_to_track.add(reg)
+                                        # Also spawn a new descendant for it
+                                        new_desc = Descendant(target=reg, at_tick=ex_record.tick)
+                                        worklist.append(new_desc)
+                                        print(f"  -> [Taint Tracking] Added Control Variable '{reg}' from exit condition to tracking targets!")
+                        
+                        continue
+
+                record = item
                     
                 # --- IMPLICIT CONTROL FLOW (Control Dependency) ---
                 if hunting_for_control_dependency:
@@ -248,15 +307,122 @@ class ForwardSliceTracker:
         
         print(f"[*] Starting Forward Slicing for '{target}' from Tick {start_tick} to {end_tick if end_tick else 'End'}")
         
-        limit = end_tick if end_tick is not None else len(self.ctx.trace_history)
-        for tick in range(start_tick, limit + 1):
-            if not targets_to_track:
-                print(f"  -> [Forward Taint Empty] All taints killed. Stopping forward trace at Tick {tick}.")
+        trace_list = self.ctx.compressed_trace if self.ctx.compressed_trace is not None else self.ctx.trace_history
+        
+        # find start
+        start_idx = 0
+        for i, item in enumerate(trace_list):
+            item_start = item.tick if hasattr(item, 'tick') else item.start_tick
+            if item_start >= start_tick:
+                start_idx = i
                 break
                 
-            record = self.ctx.get_trace_at_tick(tick)
-            if not record:
-                continue
+        limit_tick = end_tick if end_tick is not None else float('inf')
+        
+        for i in range(start_idx, len(trace_list)):
+            if not targets_to_track:
+                print(f"  -> [Forward Taint Empty] All taints killed. Stopping forward trace.")
+                break
+                
+            item = trace_list[i]
+            item_start = item.tick if hasattr(item, 'tick') else item.start_tick
+            if item_start > limit_tick:
+                break
+                
+            if hasattr(item, 'iterations'): # It's a LoopBlock
+                block = item
+                loop_modifies_target = False
+                for b_record in block.body:
+                    tracked_bases = {self.ctx.REG_TO_BASE.get(t, t) for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")}
+                    if any(self.ctx.REG_TO_BASE.get(r, r) in tracked_bases for r in b_record.regs_read if not r.startswith("flag_")):
+                        loop_modifies_target = True
+                        break
+                        
+                    if any(m in targets_to_track for m in b_record.mem_read):
+                        loop_modifies_target = True
+                        break
+
+                if not loop_modifies_target:
+                    print(f"  -> [Lazy Skip] Forward tracker skipping irrelevant loop block spanning Ticks {block.start_tick}->{block.end_tick}")
+                    continue
+                else:
+                    from asm_analyzer.engine.vsa_evaluator import LoopEvaluator
+                    print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets {targets_to_track}")
+                    evaluator = LoopEvaluator()
+                    summary = evaluator.evaluate(block)
+                    summary.tick = block.start_tick
+                    
+                    # Add summary to the slice so Z3 translates the loop
+                    slice_instructions.append(summary)
+                    
+                    # FIXED-POINT TAINT ANALYSIS
+                    print(f"  -> [Fixed-Point Taint] Starting taint propagation on loop body...")
+                    old_targets = set()
+                    iters = 0
+                    while old_targets != targets_to_track:
+                        old_targets = targets_to_track.copy()
+                        iters += 1
+                        
+                        for b_record in block.body:
+                            # 1. Kill Phase
+                            is_taint_breaker = False
+                            if len(b_record.regs_read) == 0 and len(b_record.mem_read) == 0:
+                                is_taint_breaker = True
+                            elif b_record.mnemonic in ("xor", "sub") and len(b_record.operands) == 2:
+                                op0, op1 = b_record.operands[0], b_record.operands[1]
+                                if op0['type'] == 'reg' and op1['type'] == 'reg' and op0['value'] == op1['value']:
+                                    is_taint_breaker = True
+                                    
+                            if is_taint_breaker and b_record.mnemonic != 'call':
+                                for reg_out in b_record.regs_write:
+                                    base_out = self.ctx.REG_TO_BASE.get(reg_out, reg_out)
+                                    to_remove = [t for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_") and self.ctx.REG_TO_BASE.get(t, t) == base_out]
+                                    for t in to_remove: targets_to_track.remove(t)
+                                if b_record.mem_write:
+                                    write_size = self.ctx._calculate_memory_access_size(b_record)
+                                    base_addr = b_record.mem_write[0]
+                                    for addr in range(base_addr, base_addr + write_size):
+                                        if addr in targets_to_track: targets_to_track.remove(addr)
+                                continue
+
+                            # 2. Gen Phase
+                            tracked_bases = {self.ctx.REG_TO_BASE.get(t, t) for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")}
+                            reads_target = any(self.ctx.REG_TO_BASE.get(r, r) in tracked_bases for r in b_record.regs_read if not r.startswith("flag_"))
+                            reads_mem = any(m in targets_to_track for m in b_record.mem_read)
+                            
+                            reads_tracked_flag = False
+                            tracked_flags = [t for t in targets_to_track if isinstance(t, str) and t.startswith("flag_")]
+                            if tracked_flags:
+                                required_flags = []
+                                if b_record.mnemonic in self.ctx.JUMP_FLAGS: required_flags.extend(self.ctx.JUMP_FLAGS[b_record.mnemonic])
+                                if hasattr(self.ctx, 'SET_FLAGS') and b_record.mnemonic in self.ctx.SET_FLAGS: required_flags.extend(self.ctx.SET_FLAGS[b_record.mnemonic])
+                                if any(f in required_flags for f in tracked_flags): reads_tracked_flag = True
+
+                            if reads_target or reads_mem or reads_tracked_flag:
+                                for reg_out in b_record.regs_write:
+                                    base_out = self.ctx.REG_TO_BASE.get(reg_out, reg_out)
+                                    if not any(self.ctx.REG_TO_BASE.get(t, t) == base_out for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")):
+                                        targets_to_track.add(reg_out)
+                                        print(f"  -> [Loop Taint Gen] Tainted Register '{reg_out}' at Tick {b_record.tick}")
+                                        
+                                if b_record.mem_write:
+                                    write_size = self.ctx._calculate_memory_access_size(b_record)
+                                    base_addr = b_record.mem_write[0]
+                                    for addr in range(base_addr, base_addr + write_size):
+                                        if addr not in targets_to_track:
+                                            targets_to_track.add(addr)
+                                            print(f"  -> [Loop Taint Gen] Tainted Memory '[0x{addr:x}]' at Tick {b_record.tick}")
+                                            
+                                if b_record.mnemonic in self.ctx.MODIFIES_ALL_FLAGS or b_record.mnemonic in self.ctx.MODIFIES_ZSO_ONLY:
+                                    affected_flags = ["flag_zf", "flag_sf", "flag_of"]
+                                    if b_record.mnemonic in self.ctx.MODIFIES_ALL_FLAGS: affected_flags.append("flag_cf")
+                                    for f in affected_flags:
+                                        if f not in targets_to_track: targets_to_track.add(f)
+                                        
+                    print(f"  -> [Fixed-Point Taint] Stabilized after {iters} iterations.")
+                    continue
+                    
+            record = item
                 
             # --- 1. Kill Phase (Taint Breakers) ---
             is_taint_breaker = False
@@ -485,9 +651,16 @@ class Tracker:
 
     def __init__(self):
         self.trace_history: List[TraceRecord] = []
+        self.compressed_trace = None
         from asm_analyzer.engine.path_tree import PathTree
         self.path_tree = PathTree()
         self.forward_cache: Dict[tuple, List['TraceRecord']] = {}
+    
+    def compress_trace(self):
+        from asm_analyzer.engine.loop_compressor import TraceCompressor
+        print("[*] Compressing trace history...")
+        self.compressed_trace = TraceCompressor.compress_trace(self.trace_history)
+        print(f"[+] Trace compressed from {len(self.trace_history)} to {len(self.compressed_trace)} elements.")
     
     def add_trace(self, record: TraceRecord):
         """Append an executed instruction to the history."""
