@@ -28,7 +28,7 @@ def main():
     # Check if cmp is in the trace history
     target_tick = -1
     for record in reversed(core.tracker.trace_history):
-        if record.mnemonic == "cmp" and "0xde1770ef" in record.op_str.lower():
+        if record.mnemonic == "cmp" and "0xde13bcef" in record.op_str.lower():
             target_tick = record.tick
             break
             
@@ -68,7 +68,7 @@ def main():
             
         key_var = z3.BitVec("key_input", 32)
         translator.target_vars.add(key_var)
-        translator.solver.add(key_var > 5000)
+        translator.solver.add(key_var > 1000)
         
         # Clear previous assumptions
         check_key_start_tick = 0
@@ -109,8 +109,8 @@ def main():
         
         rax_final = translator.reg_state.get("rax", None)
         if rax_final is not None:
-            print("[+] Adding Goal Constraint: rax == 0xDE1770EF")
-            translator.solver.add(rax_final == 0xDE1770EF)
+            print("[+] Adding Goal Constraint: rax == 0xDE13BCEF")
+            translator.solver.add(rax_final == 0xDE13BCEF)
 
         print("\n[*] Z3 Solving...")
         import re

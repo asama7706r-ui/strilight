@@ -10,7 +10,7 @@ int check_key(int key) {
   // The backward slicer doesn't track path constraints (Forward tracker is
   // disabled). So if the engine finds a 'key' that passes the math below, it
   // might be < 5000.
-  if (key < 5000) {
+  if (key < 1000) {
     printf("Key too small!\n");
     return 0;
   }
@@ -44,11 +44,11 @@ int check_key(int key) {
   unsigned short *w_ptr = (unsigned short *)(buffer + 1);
   *w_ptr = (unsigned short)magic;
 
-  // If key = 1957 -> magic = 6000 (0x1770).
-  // buffer becomes: EF 70 17 DE (which is 0xDE1770EF)
+  // If key = 1957 -> magic = 398268 (0x613BC).
+  // buffer becomes: EF BC 13 DE (which is 0xDE13BCEF)
 
   // Check the final 32-bit value
-  if (*dw_ptr == 0xDE1770EF) {
+  if (*dw_ptr == 0xDE13BCEF) {
     return 1;
   }
 
@@ -63,7 +63,7 @@ int get_input() {
 }
 
 int main(int argc, char **argv) {
-  int key = 123699113;
+  int key = 1073809317;
 
   if (check_key(key)) {
     printf("ACCESS GRANTED - YOU DEFEATED THE BOSS!\n");
