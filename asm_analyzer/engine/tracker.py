@@ -124,6 +124,12 @@ class BackwardSliceTracker:
                                         new_desc = Descendant(target=reg, at_tick=ex_record.tick)
                                         worklist.append(new_desc)
                                         print(f"  -> [Taint Tracking] Added Control Variable '{reg}' from exit condition to tracking targets!")
+                                        
+                                for mem_addr in ex_record.mem_read:
+                                    targets_to_track.add(mem_addr)
+                                    new_desc = Descendant(target=mem_addr, at_tick=ex_record.tick, is_memory=True)
+                                    worklist.append(new_desc)
+                                    print(f"  -> [Taint Tracking] Added Control Memory [0x{mem_addr:x}] from exit condition to tracking targets!")
                         
                         continue
 

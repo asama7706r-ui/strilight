@@ -59,6 +59,13 @@ class AnalyzerCore:
     def start(self):
         """Start the emulation."""
         print("[+] Starting emulation...")
+        self.initial_regs = {}
+        for reg in ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15']:
+            try:
+                self.initial_regs[reg] = self.se.reg_read(reg)
+            except Exception:
+                pass
+                
         try:
             self.se.run_module(self.module)
         except Exception as e:

@@ -147,26 +147,41 @@ class LoopEvaluator:
         # Extract Exit Condition from the end of the block
         if len(loop_block.body) >= 2:
             last_inst = loop_block.body[-1]
-            prev_inst = loop_block.body[-2]
-            
-            # Simple heuristic: look for CMP followed by JCC
-            if last_inst.mnemonic.startswith("j") and prev_inst.mnemonic in ["cmp", "test"]:
-                summary.exit_condition = f"{prev_inst.mnemonic} {prev_inst.op_str} -> {last_inst.mnemonic}"
-                
-                # Copy the records to avoid mutating the original block
-                import copy
+        # Search for the exit condition (CMP/TEST followed by JCC) anywhere in the loop body
+        exit_cmp = None
+        exit_jmp = None
+        for i in range(1, len(loop_block.body)):
+            curr_inst = loop_block.body[i]
+            prev_inst = loop_block.body[i-1]
+            if curr_inst.mnemonic.startswith("j") and curr_inst.mnemonic != "jmp" and prev_inst.mnemonic in ["cmp", "test"]:
                 exit_cmp = copy.copy(prev_inst)
-                exit_jmp = copy.copy(last_inst)
+                exit_jmp = copy.copy(curr_inst)
+                summary.exit_condition = f"{prev_inst.mnemonic} {prev_inst.op_str} -> {curr_inst.mnemonic}"
+                break
                 
-                # Force the CMP to generate ZF for the JMP
-                if not hasattr(exit_cmp, 'requested_flags'):
-                    exit_cmp.requested_flags = []
-                if 'flag_zf' not in exit_cmp.requested_flags:
-                    exit_cmp.requested_flags.append('flag_zf')
-                
-                # When the loop exits, it means the jump back to the start was NOT taken!
+        if exit_cmp and exit_jmp:
+            # Force the CMP to generate all relevant flags for the JMP (ZF, SF, OF, CF)
+            if not hasattr(exit_cmp, 'requested_flags'):
+                exit_cmp.requested_flags = []
+            for flag in ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']:
+                if flag not in exit_cmp.requested_flags:
+                    exit_cmp.requested_flags.append(flag)
+            
+            # Determine if the jump is taken or not when exiting the loop
+            try:
+                target_addr = int(exit_jmp.op_str, 16)
+                loop_addresses = {r.address for r in loop_block.body if hasattr(r, 'address')}
+                if target_addr in loop_addresses:
+                    # Jump goes back into the loop. Exiting means it was NOT taken.
+                    exit_jmp.jump_taken = False
+                else:
+                    # Jump goes outside the loop. Exiting means it WAS taken.
+                    exit_jmp.jump_taken = True
+            except ValueError:
+                # Fallback if op_str is not an explicit address
                 exit_jmp.jump_taken = False
-                summary.exit_records = [exit_cmp, exit_jmp]
+                
+            summary.exit_records = [exit_cmp, exit_jmp]
                 
         summary.iterations = loop_block.iterations
         return summary

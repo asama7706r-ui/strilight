@@ -737,7 +737,10 @@ class Z3Translator:
         
         # 3. Optimize N (User's instruction: Minimize N to find the shortest path)
         if hasattr(self.solver, 'minimize'):
-            self.solver.minimize(N)
+             self.solver.minimize(N)
+        
+        # Use actual iterations from execution record (OBSOLETE)
+        # N = z3.BitVecVal(max_iterations, 64)
             
         # Temporarily clear current_instr to prevent _write_operand from overriding addresses
         old_instr = getattr(self, 'current_instr', None)

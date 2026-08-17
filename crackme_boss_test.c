@@ -23,10 +23,9 @@ int check_key(int key) {
   int magic = (key ^ 0x55) * 3;
 
   // Trap 3: The Symbolic Loop Trap
-  // A loop that manipulates the magic value.
-  // The engine must compress this loop and translate it into a mathematical
-  // equation (e.g. magic_new = magic_old + 4 * 15)
-  int loop_counter = 0;
+  // Now the loop counter starts based on the user's input!
+  // We use bitwise AND which is fully supported by the translator
+  int loop_counter = key & 0x7FFF;
   while (loop_counter < 100000) {
     magic += 4;
     loop_counter++;
@@ -64,7 +63,7 @@ int get_input() {
 }
 
 int main(int argc, char **argv) {
-  int key = 1117849577;
+  int key = 123699113;
 
   if (check_key(key)) {
     printf("ACCESS GRANTED - YOU DEFEATED THE BOSS!\n");
