@@ -66,10 +66,7 @@ class Z3Translator:
         self.reg_state[phys_name] = new_var
 
     def _write_flag(self, flag_name: str, bool_val):
-        ssa_name = self._get_new_ssa_name(flag_name)
-        new_var = z3.Bool(ssa_name)
-        self.solver.add(new_var == bool_val)
-        self.flag_state[flag_name] = new_var
+        self.flag_state[flag_name] = bool_val
 
     def generate_flags(self, instr: TraceRecord, mnemonic: str, dst_ast, src_ast, res_ast, size: int):
         requested = instr.requested_flags
@@ -466,10 +463,10 @@ class Z3Translator:
                 self.last_jcc_jump_taken = instr.jump_taken
                 if instr.jump_taken:
                     self.solver.add(cond_ast)
-                    print(f'  -> [Z3 Jump Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}: {cond_ast}')
+                    print(f'  -> [✓] [Z3 Jump Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}')
                 else:
                     self.solver.add(z3.Not(cond_ast))
-                    print(f'  -> [Z3 Jump Not Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}: Not({cond_ast})')
+                    print(f'  -> [✓] [Z3 Jump Not Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}')
 
     def _handle_mul(self, instr):
         ops = instr.operands
@@ -811,46 +808,13 @@ class Z3Translator:
             self.last_jcc_cond_ast = None
             self.last_jcc_jump_taken = None
             
-            last_cmp_dst_ast = None
-            last_cmp_src_ast = None
-            
             for record in summary.exit_records:
-                if getattr(record, 'mnemonic', '') == 'cmp':
-                    # Parse to get the N-th state
-                    self.parse_instruction(record)
-                    # BUT also compute the shadow operands manually!
-                    dst, src = record.operands[0], record.operands[1]
-                    dst_val, _ = self._read_operand(dst)
-                    src_val, _ = self._read_operand(src)
-                    
-                    last_cmp_dst_ast = z3.substitute(dst_val, *shadow_subs)
-                    last_cmp_src_ast = z3.substitute(src_val, *shadow_subs)
-                else:
-                    self.parse_instruction(record)
+                self.parse_instruction(record)
                 
             if self.last_jcc_cond_ast is not None and self.last_jcc_jump_taken is not None:
                 print(f"  [Z3Translator] Applying N-1 Iron Constraint!")
                 
-                # Manually evaluate the JCC condition for N-1
-                jcc_record = summary.exit_records[-1]
-                m = jcc_record.mnemonic
-                
-                cond_shadow_ast = None
-                if last_cmp_dst_ast is not None and last_cmp_src_ast is not None:
-                    if m in ['je', 'jz']: cond_shadow_ast = (last_cmp_dst_ast == last_cmp_src_ast)
-                    elif m in ['jne', 'jnz']: cond_shadow_ast = (last_cmp_dst_ast != last_cmp_src_ast)
-                    elif m in ['jl', 'jnge']: cond_shadow_ast = (last_cmp_dst_ast < last_cmp_src_ast)
-                    elif m in ['jle', 'jng']: cond_shadow_ast = (last_cmp_dst_ast <= last_cmp_src_ast)
-                    elif m in ['jg', 'jnle']: cond_shadow_ast = (last_cmp_dst_ast > last_cmp_src_ast)
-                    elif m in ['jge', 'jnl']: cond_shadow_ast = (last_cmp_dst_ast >= last_cmp_src_ast)
-                    elif m in ['jb', 'jnae', 'jc']: cond_shadow_ast = z3.ULT(last_cmp_dst_ast, last_cmp_src_ast)
-                    elif m in ['jbe', 'jna']: cond_shadow_ast = z3.ULE(last_cmp_dst_ast, last_cmp_src_ast)
-                    elif m in ['ja', 'jnbe']: cond_shadow_ast = z3.UGT(last_cmp_dst_ast, last_cmp_src_ast)
-                    elif m in ['jae', 'jnb', 'jnc']: cond_shadow_ast = z3.UGE(last_cmp_dst_ast, last_cmp_src_ast)
-                
-                if cond_shadow_ast is None:
-                    print(f"  [!] Z3Translator WARNING: Unsupported JCC '{m}' for Iron Constraint!")
-                    cond_shadow_ast = self.last_jcc_cond_ast # Fallback
+                cond_shadow_ast = z3.substitute(self.last_jcc_cond_ast, *shadow_subs)
                 
                 # The jump taken status at N-1 MUST be the OPPOSITE of what it was at N.
                 expected_shadow_jump_taken = not self.last_jcc_jump_taken
@@ -861,4 +825,4 @@ class Z3Translator:
                     iron_constraint = z3.Not(cond_shadow_ast)
                     
                 self.solver.add(z3.Implies(N > 0, iron_constraint))
-                print(f"  -> Added Constraint: Implies(N > 0, {iron_constraint})")
+                print("  -> [✓] Loop exit equation successfully built and injected into solver.")

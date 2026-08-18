@@ -12,7 +12,7 @@ from asm_analyzer.engine.tracker import Descendant
 from asm_analyzer.engine.translator import Z3Translator
 
 def main():
-    target_exe = r"D:\work_app\MyApp\crackme_boss.exe"
+    target_exe = os.path.join(app_dir, "crackme_boss.exe")
     
     print("[*] Initializing AnalyzerCore with Speakeasy backend...")
     core = AnalyzerCore(target_path=[target_exe, "5001"])
