@@ -1,0 +1,134 @@
+from typing import List, Set, Union, Optional
+import copy
+from asm_analyzer.engine.tracker import TraceRecord
+from asm_analyzer.engine.loop_compressor import LoopBlock
+from asm_analyzer.engine.x86_defs import get_flags_written, get_instruction_type, get_flags_read
+from typing import Tuple
+
+class TrackerBridge:
+    """
+    Facade layer to decouple instruction tracking logic from the VSA Evaluator.
+    Provides generic helper functions for extracting instruction dependencies.
+    """
+    
+    @staticmethod
+    def get_intra_block_slice(
+        body: List[Union[TraceRecord, LoopBlock]], 
+        start_idx: int, 
+        targets: Set[str]
+    ) -> List[TraceRecord]:
+        """
+        Performs a lazy, intra-block backward slice to find the instructions 
+        that satisfy the required targets (e.g., flags).
+        
+        Args:
+            body: The sequence of instructions/blocks (e.g., loop_block.body)
+            start_idx: The index to start searching backward from (exclusive).
+            targets: A set of target variable/flag names to find writers for.
+            
+        Returns:
+            A list of TraceRecords that generate the requested targets.
+            The list is in chronological order.
+        """
+        needed_targets = set(targets)
+        slice_records = []
+        
+        # Backward search
+        for i in range(start_idx - 1, -1, -1):
+            if not needed_targets:
+                break # Lazy Evaluation: Stop when all targets are satisfied
+                
+            item = body[i]
+            
+            # Handle Nested Loops gracefully to prevent the "Nested Loop Block" crash
+            if isinstance(item, LoopBlock):
+                # For now, we skip nested blocks in this intra-block slice.
+                # In the future, we could query the inner loop's summary for flag modifications.
+                continue
+                
+            if isinstance(item, TraceRecord):
+                # Does this instruction write to any of our needed targets?
+                # We check both explicit registers (regs_write) and our metadata (flags_written)
+                written_explicit = set(item.regs_write)
+                written_meta = set(get_flags_written(item.mnemonic))
+                all_written = written_explicit.union(written_meta)
+                
+                # Intersection to find if it satisfies any need
+                satisfied = needed_targets.intersection(all_written)
+                
+                if satisfied:
+                    record_copy = copy.copy(item)
+                    if not hasattr(record_copy, 'requested_flags'):
+                        record_copy.requested_flags = []
+                        
+                    for flag in satisfied:
+                        if flag not in record_copy.requested_flags:
+                            record_copy.requested_flags.append(flag)
+                            
+                    slice_records.append(record_copy)
+                    # Remove found targets so we don't keep searching for them
+                    needed_targets -= satisfied
+
+        # Reverse to return them in chronological execution order
+        slice_records.reverse()
+        return slice_records
+
+    @staticmethod
+    def evaluate_loop_exit(loop_block: LoopBlock) -> Tuple[Optional[str], List[TraceRecord]]:
+        """
+        Encapsulates all control-flow logic for finding and resolving 
+        the loop's exit condition.
+        
+        Returns:
+            A tuple of (formatted_condition_string, list_of_exit_records)
+        """
+        cond_strings = []
+        all_exit_records = []
+        
+        # 1. Find ALL conditional jumps in the loop body
+        # This handles loops with multiple conditions (e.g., mid-loop 'break' and a 'while' condition)
+        for i in range(len(loop_block.body)):
+            item = loop_block.body[i]
+            if not hasattr(item, 'mnemonic'):
+                continue
+                
+            if get_instruction_type(item.mnemonic) == 'jcc':
+                exit_jmp = copy.copy(item)
+                
+                # 2. Extract dependencies via lazy backward slice for THIS specific jump
+                flags_needed = set(get_flags_read(exit_jmp.mnemonic))
+                slice_records = TrackerBridge.get_intra_block_slice(loop_block.body, i, flags_needed)
+                
+                # 3. Determine control flow behavior (was jump taken or not?) and filter intra-loop branches
+                try:
+                    target_addr = int(exit_jmp.op_str, 16)
+                    loop_addresses = {r.address for r in loop_block.body if hasattr(r, 'address')}
+                    
+                    if target_addr not in loop_addresses:
+                        # Case 1: Jumps OUTSIDE the loop. Exiting means this jump MUST be taken.
+                        exit_jmp.jump_taken = True
+                    elif hasattr(exit_jmp, 'address') and target_addr <= exit_jmp.address:
+                        # Case 2: Jumps BACKWARDS (back-edge) inside the loop.
+                        # This is a loop-continue jump (do-while). Exiting means this jump MUST NOT be taken.
+                        exit_jmp.jump_taken = False
+                    else:
+                        # Case 3: Jumps FORWARDS inside the loop (e.g. an internal if-statement). 
+                        # This is an intra-loop branch, not an exit condition! We ignore it.
+                        continue
+                        
+                except ValueError:
+                    pass # Fallback if op_str is weird
+                    
+                # 4. Format a human-readable condition string
+                cond_str = " & ".join([f"{r.mnemonic} {r.op_str}" for r in slice_records])
+                formatted_condition = f"[{cond_str}] -> {exit_jmp.mnemonic}(Taken:{exit_jmp.jump_taken})"
+                
+                cond_strings.append(formatted_condition)
+                all_exit_records.extend(slice_records)
+                all_exit_records.append(exit_jmp)
+                
+        if not cond_strings:
+            return None, []
+            
+        # Return cleanly to the math evaluator
+        return " AND ".join(cond_strings), all_exit_records

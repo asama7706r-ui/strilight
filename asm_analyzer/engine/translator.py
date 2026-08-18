@@ -462,11 +462,11 @@ class Z3Translator:
                 self.last_jcc_cond_ast = cond_ast
                 self.last_jcc_jump_taken = instr.jump_taken
                 if instr.jump_taken:
+                    print(f"  -> [OK] [Z3 Jump Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}")
                     self.solver.add(cond_ast)
-                    print(f'  -> [✓] [Z3 Jump Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}')
                 else:
+                    print(f"  -> [OK] [Z3 Jump Not Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}")
                     self.solver.add(z3.Not(cond_ast))
-                    print(f'  -> [✓] [Z3 Jump Not Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}')
 
     def _handle_mul(self, instr):
         ops = instr.operands

@@ -5,7 +5,8 @@ if TYPE_CHECKING:
 from asm_analyzer.engine.abstract_state import AbstractState
 from asm_analyzer.pruning.interval import Interval, DisjointIntervalSet
 from asm_analyzer.engine.loop_compressor import LoopBlock
-
+from asm_analyzer.engine.x86_defs import get_instruction_type, get_flags_read
+from asm_analyzer.engine.tracker_bridge import TrackerBridge
 class LoopSummary:
     """
     Symbolic mathematical summary of a loop's effect.
@@ -144,44 +145,13 @@ class LoopEvaluator:
                         summary.deltas[reg_name] = delta
                         print(f"  [LoopEvaluator] Extracted Delta for {reg_name}: {delta}")
                         
-        # Extract Exit Condition from the end of the block
-        if len(loop_block.body) >= 2:
-            last_inst = loop_block.body[-1]
-        # Search for the exit condition (CMP/TEST followed by JCC) anywhere in the loop body
-        exit_cmp = None
-        exit_jmp = None
-        for i in range(1, len(loop_block.body)):
-            curr_inst = loop_block.body[i]
-            prev_inst = loop_block.body[i-1]
-            if curr_inst.mnemonic.startswith("j") and curr_inst.mnemonic != "jmp" and prev_inst.mnemonic in ["cmp", "test"]:
-                exit_cmp = copy.copy(prev_inst)
-                exit_jmp = copy.copy(curr_inst)
-                summary.exit_condition = f"{prev_inst.mnemonic} {prev_inst.op_str} -> {curr_inst.mnemonic}"
-                break
-                
-        if exit_cmp and exit_jmp:
-            # Force the CMP to generate all relevant flags for the JMP (ZF, SF, OF, CF)
-            if not hasattr(exit_cmp, 'requested_flags'):
-                exit_cmp.requested_flags = []
-            for flag in ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']:
-                if flag not in exit_cmp.requested_flags:
-                    exit_cmp.requested_flags.append(flag)
-            
-            # Determine if the jump is taken or not when exiting the loop
-            try:
-                target_addr = int(exit_jmp.op_str, 16)
-                loop_addresses = {r.address for r in loop_block.body if hasattr(r, 'address')}
-                if target_addr in loop_addresses:
-                    # Jump goes back into the loop. Exiting means it was NOT taken.
-                    exit_jmp.jump_taken = False
-                else:
-                    # Jump goes outside the loop. Exiting means it WAS taken.
-                    exit_jmp.jump_taken = True
-            except ValueError:
-                # Fallback if op_str is not an explicit address
-                exit_jmp.jump_taken = False
-                
-            summary.exit_records = [exit_cmp, exit_jmp]
+        # Delegate ALL control flow and condition analysis to the tracking facade
+        cond_str, exit_records = TrackerBridge.evaluate_loop_exit(loop_block)
+        print(f"\n[DEBUG TRACKER_BRIDGE] cond_str: {cond_str}")
+        print(f"[DEBUG TRACKER_BRIDGE] exit_records: {exit_records}")
+        if cond_str:
+            summary.exit_condition = cond_str
+            summary.exit_records = exit_records
                 
         summary.iterations = loop_block.iterations
         return summary
