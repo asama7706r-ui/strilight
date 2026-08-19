@@ -23,6 +23,7 @@ class AnalyzerCore:
             custom_config["command_line"] = " ".join(target_path)
             
         custom_config.setdefault("modules", {})["functions_always_exist"] = True
+        custom_config["timeout"] = 300  # Increased timeout for deep nested loop tracing
         self.se = speakeasy.Speakeasy(config=custom_config)
         
         if code:

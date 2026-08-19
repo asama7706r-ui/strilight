@@ -54,21 +54,35 @@ class TraceCompressor:
     This acts as Phase 1 (Lazy Tagging) to prevent State Explosion in the Tracker.
     """
     
-    @staticmethod
-    def _hash_record(record: TraceRecord) -> int:
-        # We identify a matching instruction by its address. 
-        # In a real dynamic trace, the address is usually sufficient to identify the instruction uniqueness.
-        return record.address
+    @classmethod
+    def _hash_record(cls, record: Union[TraceRecord, 'LoopBlock']) -> int:
+        # We identify a matching instruction by its address.
+        # For a LoopBlock, we hash its structural signature (body and iterations).
+        if hasattr(record, 'body'):
+            body_hashes = tuple(cls._hash_record(r) for r in record.body)
+            return hash(("LoopBlock", getattr(record, 'iterations', 0), body_hashes))
+        return getattr(record, 'address', 0)
 
     @classmethod
-    def compress_trace(cls, trace: List[TraceRecord], min_iterations: int = 3) -> List[Union[TraceRecord, LoopBlock]]:
+    def compress_trace(cls, trace: List[Union[TraceRecord, 'LoopBlock']], min_iterations: int = 3) -> List[Union[TraceRecord, 'LoopBlock']]:
         """
         Compresses the trace by folding contiguous repeating sequences.
-        min_iterations: Only compress if the pattern repeats at least this many times.
+        Operates hierarchically (bottom-up) to compress nested loops.
         """
         if not trace:
             return []
             
+        current_trace = trace
+        while True:
+            new_trace = cls._compress_pass(current_trace, min_iterations)
+            if len(new_trace) == len(current_trace):
+                break
+            current_trace = new_trace
+            
+        return current_trace
+
+    @classmethod
+    def _compress_pass(cls, trace: List[Union[TraceRecord, 'LoopBlock']], min_iterations: int) -> List[Union[TraceRecord, 'LoopBlock']]:
         # Convert to an array of hashes for fast comparison
         hashed_trace = [cls._hash_record(r) for r in trace]
         n = len(trace)
@@ -109,7 +123,8 @@ class TraceCompressor:
             if best_iterations >= min_iterations:
                 # We found a loop!
                 loop_body = trace[i : i + best_pattern_size]
-                compressed_block = LoopBlock(body=loop_body, iterations=best_iterations)
+                compressed_body = cls.compress_trace(loop_body, min_iterations)
+                compressed_block = LoopBlock(body=compressed_body, iterations=best_iterations)
                 compressed.append(compressed_block)
                 
                 # Advance pointer

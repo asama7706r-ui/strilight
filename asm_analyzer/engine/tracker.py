@@ -81,9 +81,20 @@ class BackwardSliceTracker:
                 # Check for LoopBlock and perform Lazy Skip
                 if hasattr(item, 'iterations'):
                     block = item
+                    
+                    def _flatten_block(b):
+                        records = []
+                        if hasattr(b, 'body'):
+                            for child in b.body: records.extend(_flatten_block(child))
+                        else:
+                            records.append(b)
+                        return records
+                        
+                    flat_body = _flatten_block(block)
+                    
                     # Lazy Evaluation: Does this loop affect us?
                     loop_modifies_target = False
-                    for b_record in block.body:
+                    for b_record in flat_body:
                         tracked_bases = {self.ctx.REG_TO_BASE.get(t, t) for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")}
                         if any(self.ctx.REG_TO_BASE.get(r, r) in tracked_bases for r in b_record.regs_write if not r.startswith("flag_")):
                             loop_modifies_target = True
@@ -337,8 +348,19 @@ class ForwardSliceTracker:
                 
             if hasattr(item, 'iterations'): # It's a LoopBlock
                 block = item
+                
+                def _flatten_block(b):
+                    records = []
+                    if hasattr(b, 'body'):
+                        for child in b.body: records.extend(_flatten_block(child))
+                    else:
+                        records.append(b)
+                    return records
+                    
+                flat_body = _flatten_block(block)
+                
                 loop_modifies_target = False
-                for b_record in block.body:
+                for b_record in flat_body:
                     tracked_bases = {self.ctx.REG_TO_BASE.get(t, t) for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")}
                     if any(self.ctx.REG_TO_BASE.get(r, r) in tracked_bases for r in b_record.regs_read if not r.startswith("flag_")):
                         loop_modifies_target = True
@@ -369,7 +391,7 @@ class ForwardSliceTracker:
                         old_targets = targets_to_track.copy()
                         iters += 1
                         
-                        for b_record in block.body:
+                        for b_record in flat_body:
                             # 1. Kill Phase
                             is_taint_breaker = False
                             if len(b_record.regs_read) == 0 and len(b_record.mem_read) == 0:

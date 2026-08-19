@@ -26,8 +26,20 @@ int check_key(int key) {
   // Now the loop counter starts based on the user's input!
   // We use bitwise AND which is fully supported by the translator
   int loop_counter = key & 0x7FFF;
-  while (loop_counter < 100000) {
-    magic += 4;
+  while (loop_counter < 10000) {
+    // Nested loop trap to test our TraceCompressor's hierarchical folding!
+    int inner_counter = 0;
+    while (inner_counter < 4) {
+      // We will now make `dummy` a weird changing sequence in each cycle.
+      // inner_counter changes: 0, 1, 2, 3
+      // dummy will be: 0x55, 0x54, 0x57, 0x56
+      int dummy = inner_counter ^ 0x55;
+
+      magic += 1;
+      magic += dummy; // Now magic's delta is NON-CONSTANT! (Non-linear series)
+
+      inner_counter++;
+    }
     loop_counter++;
   }
 
@@ -63,7 +75,7 @@ int get_input() {
 }
 
 int main(int argc, char **argv) {
-  int key = 1073809317;
+  int key = 34789;
 
   if (check_key(key)) {
     printf("ACCESS GRANTED - YOU DEFEATED THE BOSS!\n");

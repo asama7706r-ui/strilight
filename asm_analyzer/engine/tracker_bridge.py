@@ -102,18 +102,38 @@ class TrackerBridge:
                 # 3. Determine control flow behavior (was jump taken or not?) and filter intra-loop branches
                 try:
                     target_addr = int(exit_jmp.op_str, 16)
-                    loop_addresses = {r.address for r in loop_block.body if hasattr(r, 'address')}
+                    def _get_all_addresses(body):
+                        addrs = set()
+                        for r in body:
+                            if hasattr(r, 'iterations') and hasattr(r, 'body'):
+                                addrs.update(_get_all_addresses(r.body))
+                            elif hasattr(r, 'address'):
+                                addrs.add(r.address)
+                        return addrs
+                        
+                    loop_addresses = _get_all_addresses(loop_block.body)
                     
                     if target_addr not in loop_addresses:
                         # Case 1: Jumps OUTSIDE the loop. Exiting means this jump MUST be taken.
                         exit_jmp.jump_taken = True
                     elif hasattr(exit_jmp, 'address') and target_addr <= exit_jmp.address:
                         # Case 2: Jumps BACKWARDS (back-edge) inside the loop.
-                        # This is a loop-continue jump (do-while). Exiting means this jump MUST NOT be taken.
+                        # The true back-edge of a loop jumps to its header, which is the 
+                        # lowest memory address of the loop's block.
+                        # If a backward jump targets an address greater than the minimum address,
+                        # it must be the back-edge of an INNER nested loop!
+                        if loop_addresses:
+                            min_addr = min(loop_addresses)
+                            print(f"[DEBUG TRACKER_BRIDGE] JMP BACKWARD: {exit_jmp.mnemonic} to {hex(target_addr)}. Min addr is {hex(min_addr)}")
+                            if target_addr > min_addr:
+                                print(f"[DEBUG TRACKER_BRIDGE] -> IGNORED (target {hex(target_addr)} > min {hex(min_addr)})")
+                                continue
+                            print(f"[DEBUG TRACKER_BRIDGE] -> ACCEPTED as back-edge!")
                         exit_jmp.jump_taken = False
                     else:
                         # Case 3: Jumps FORWARDS inside the loop (e.g. an internal if-statement). 
                         # This is an intra-loop branch, not an exit condition! We ignore it.
+                        print(f"[DEBUG TRACKER_BRIDGE] JMP FORWARD: {exit_jmp.mnemonic} to {hex(target_addr)} (Ignored)")
                         continue
                         
                 except ValueError:
@@ -122,6 +142,7 @@ class TrackerBridge:
                 # 4. Format a human-readable condition string
                 cond_str = " & ".join([f"{r.mnemonic} {r.op_str}" for r in slice_records])
                 formatted_condition = f"[{cond_str}] -> {exit_jmp.mnemonic}(Taken:{exit_jmp.jump_taken})"
+                print(f"[DEBUG TRACKER_BRIDGE] Found Exit Condition: {formatted_condition}")
                 
                 cond_strings.append(formatted_condition)
                 all_exit_records.extend(slice_records)

@@ -44,29 +44,35 @@ class LoopEvaluator:
     def __init__(self):
         pass
         
-    def evaluate(self, loop_block: LoopBlock) -> LoopSummary:
-        # Initial Blank Slate
-        state_0 = AbstractState()
-        
-        # Pre-initialize registers and active memory to Symbolic Zero [0, 0] to extract relative Deltas
-        for record in loop_block.body:
-            for is_dst, ops in [(False, record.regs_read), (True, record.regs_write)]:
+    def _extract_ops(self, body, state_0):
+        for record in body:
+            if hasattr(record, 'body'):
+                self._extract_ops(record.body, state_0)
+                continue
+            for is_dst, ops in [(False, getattr(record, 'regs_read', [])), (True, getattr(record, 'regs_write', []))]:
                 for reg in ops:
                     if reg not in state_0.registers:
                         dset = DisjointIntervalSet(k_limit=8)
                         dset.add(Interval(0, 0))
                         state_0.set_register(reg, dset)
             
-            for is_dst, mems in [(False, record.mem_read), (True, record.mem_write)]:
+            for is_dst, mems in [(False, getattr(record, 'mem_read', [])), (True, getattr(record, 'mem_write', []))]:
                 for mem in mems:
-                    size = record.size * 8 if hasattr(record, 'size') else 32
-                    for op in record.operands:
-                        if op['type'] == 'mem': size = op.get('size', 4) * 8
+                    size = getattr(record, 'size', 4) * 8
+                    for op in getattr(record, 'operands', []):
+                        if op.get('type') == 'mem': size = op.get('size', 4) * 8
                     key = f"MEM_{mem}_{size}"
                     if key not in state_0.registers:
                         dset = DisjointIntervalSet(k_limit=8)
                         dset.add(Interval(0, 0))
                         state_0.set_register(key, dset)
+
+    def evaluate(self, loop_block: LoopBlock) -> LoopSummary:
+        # Initial Blank Slate
+        state_0 = AbstractState()
+        
+        # Pre-initialize registers and active memory to Symbolic Zero [0, 0] to extract relative Deltas
+        self._extract_ops(loop_block.body, state_0)
             
         # Pass 1: Run the macro-block once
         state_1 = self._run_pass(loop_block.body, state_0)
@@ -161,7 +167,30 @@ class LoopEvaluator:
         new_state = copy.deepcopy(state)
         
         for record in body:
-            self._dispatch_instruction(record, new_state)
+            if hasattr(record, 'body'):
+                # Nested inner LoopBlock
+                inner_summary = self.evaluate(record)
+                
+                # Apply inner loop's deltas mathematically
+                for reg_name, delta in inner_summary.deltas.items():
+                    dest_dset = new_state.get_register(reg_name)
+                    if dest_dset:
+                        total_delta = delta * getattr(record, 'iterations', 0)
+                        src_int = Interval(total_delta, total_delta)
+                        new_dset = DisjointIntervalSet(k_limit=8)
+                        for i in dest_dset.intervals:
+                            res = i.add(src_int)
+                            for r in res.intervals:
+                                new_dset.add(r)
+                        new_state.set_register(reg_name, new_dset)
+                        
+                # Apply inner loop's constant sets
+                for reg_name, const_val in inner_summary.constant_sets.items():
+                    new_dset = DisjointIntervalSet(k_limit=8)
+                    new_dset.add(Interval(const_val, const_val))
+                    new_state.set_register(reg_name, new_dset)
+            else:
+                self._dispatch_instruction(record, new_state)
             
         return new_state
         

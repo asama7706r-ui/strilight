@@ -825,4 +825,4 @@ class Z3Translator:
                     iron_constraint = z3.Not(cond_shadow_ast)
                     
                 self.solver.add(z3.Implies(N > 0, iron_constraint))
-                print("  -> [✓] Loop exit equation successfully built and injected into solver.")
+                print("  -> [OK] Loop exit equation successfully built and injected into solver.")
