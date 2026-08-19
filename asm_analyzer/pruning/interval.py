@@ -194,10 +194,8 @@ class Interval:
         new_mask = self.known_mask & other.known_mask
         new_value = (self.known_value ^ other.known_value) & new_mask
         
-        new_min = 0
-        new_max = self.physical_max
-        
-        return Interval(new_min, new_max, self.bit_width, known_mask=new_mask, known_value=new_value)
+        # Let _mask_to_interval automatically prune the bounds based on the mask
+        return Interval(0, self.physical_max, self.bit_width, known_mask=new_mask, known_value=new_value)
 
     # =========================================================================
     # Inverse Operations (Backward Slicing Algebra)
