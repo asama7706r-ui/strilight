@@ -214,11 +214,12 @@ class Z3Translator:
                         except Exception:
                             pass
                     if byte_ast is None:
-                        mem_name = f'SymMemRead_{self.mem_read_idx}_t{self.current_instr.tick}_b{i}'
+                        tick = self.current_instr.tick if self.current_instr else 0
+                        mem_name = f'SymMemRead_{self.mem_read_idx}_t{tick}_b{i}'
                         self.mem_read_idx += 1
                         byte_ast = z3.BitVec(mem_name, 8)
                         if i == 0:
-                            print(f'  -> [Symbolic Memory] Falling back to unknown for symbolic address at Tick {self.current_instr.tick}')
+                            print(f'  -> [Symbolic Memory] Falling back to unknown for symbolic address at Tick {tick}')
                 else:
                     byte_ast = chain.pop()[1]
                 while chain:
@@ -739,16 +740,39 @@ class Z3Translator:
         if hasattr(self.solver, 'minimize'):
              self.solver.minimize(N)
         
-        # Use actual iterations from execution record (OBSOLETE)
-        # N = z3.BitVecVal(max_iterations, 64)
-            
         # Temporarily clear current_instr to prevent _write_operand from overriding addresses
         old_instr = getattr(self, 'current_instr', None)
         self.current_instr = None
+        
+        def _build_polycyclic_delta(N_var, pattern: List[int], bit_size: int = 64):
+            P = len(pattern)
+            P_val = z3.BitVecVal(P, bit_size)
+            cycle_sum = sum(pattern)
+            cycle_sum_val = z3.BitVecVal(cycle_sum, bit_size)
             
-        # 4. Apply Strides: Reg_new = Reg_old + Delta * N
-        print(f"  [Z3Translator] Loop Summary Deltas: {summary.deltas}")
+            Q = z3.UDiv(N_var, P_val)
+            R = z3.URem(N_var, P_val)
+            
+            prefix = [0]
+            for x in pattern:
+                prefix.append(prefix[-1] + x)
+                
+            def build_prefix_if(R_ast, p_list, idx=1):
+                if idx >= len(p_list) - 1:
+                    return z3.BitVecVal(p_list[idx], bit_size)
+                return z3.If(
+                    R_ast == idx,
+                    z3.BitVecVal(p_list[idx], bit_size),
+                    build_prefix_if(R_ast, p_list, idx + 1)
+                )
+                
+            extra_delta = z3.If(R == 0, z3.BitVecVal(0, bit_size), build_prefix_if(R, prefix, 1))
+            return Q * cycle_sum_val + extra_delta
+            
         shadow_subs = []
+            
+        # 4. Apply Scalar Strides: Reg_new = Reg_old + Delta * N
+        print(f"  [Z3Translator] Loop Summary Deltas: {summary.deltas}")
         for reg_name, delta in summary.deltas.items():
             if reg_name.startswith("MEM_"):
                 parts = reg_name.split("_")
@@ -782,7 +806,44 @@ class Z3Translator:
             t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
             shadow_subs.append((t_after, t_after_shadow_extracted))
 
-        # 5. Handle Constant Sets from Loop body
+        # 5. Apply Polycyclic Patterns (Closed-Form Formula: Total = Q * Sum + Remainder_Prefix[R])
+        patterns = getattr(summary, 'patterns', {})
+        if patterns:
+            print(f"  [Z3Translator] Loop Summary Polycyclic Patterns: {patterns}")
+            N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
+            for reg_name, pattern in patterns.items():
+                total_delta = _build_polycyclic_delta(N, pattern, 64)
+                total_delta_prev = _build_polycyclic_delta(N_prev, pattern, 64)
+                
+                if reg_name.startswith("MEM_"):
+                    parts = reg_name.split("_")
+                    addr = int(parts[1])
+                    size_bits = int(parts[2])
+                    t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
+                    if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
+                    t_after = t_before + total_delta
+                    
+                    t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
+                    self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
+                    
+                    t_after_shadow = z3.If(N > 0, t_before + total_delta_prev, t_before)
+                    t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
+                    shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
+                    continue
+                    
+                base_reg = self._reg_to_base.get(reg_name, reg_name)
+                t_before = self._get_phys_reg(base_reg)
+                
+                self._clobber_register(base_reg)
+                t_after = self._get_phys_reg(base_reg)
+                
+                self.solver.add(t_after == t_before + total_delta)
+                
+                t_after_shadow = z3.If(N > 0, t_before + total_delta_prev, t_before)
+                t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
+                shadow_subs.append((t_after, t_after_shadow_extracted))
+
+        # 6. Handle Constant Sets from Loop body
         print(f"  [Z3Translator] Loop Summary Constant Sets: {summary.constant_sets}")
         for reg_name, const_val in summary.constant_sets.items():
             if reg_name.startswith("MEM_"):
@@ -801,7 +862,7 @@ class Z3Translator:
         # Restore current_instr
         self.current_instr = old_instr
             
-        # 6. Apply Exit Condition via SSA!
+        # 7. Apply Exit Condition via SSA!
         # By translating the exit records, Z3 automatically uses the updated SSA registers 
         # (e.g. ecx_t1, edx_t0) to create the link between LoopCounter and the tainted variables!
         if hasattr(summary, 'exit_records') and summary.exit_records:

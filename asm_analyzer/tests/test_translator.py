@@ -39,7 +39,7 @@ def get_flag(translator, flag_name):
 
 def test_z3_translator_init():
     translator = Z3Translator(memory_provider=lambda addr, size: b"\x00"*size)
-    assert isinstance(translator.solver, z3.Solver)
+    assert isinstance(translator.solver, (z3.Solver, z3.Optimize))
     assert isinstance(translator.reg_state, dict)
 
 def test_translator_mov():

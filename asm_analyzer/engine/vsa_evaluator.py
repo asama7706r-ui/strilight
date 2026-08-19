@@ -16,6 +16,9 @@ class LoopSummary:
         # Maps register name to its extracted symbolic delta per iteration (e.g., EAX increases by 4)
         self.deltas: Dict[str, int] = {}
         
+        # Maps register name to periodic polycyclic pattern (e.g., EAX increases by [5, 4, 8, 1])
+        self.patterns: Dict[str, List[int]] = {}
+        
         # Values that are set to a constant and don't change
         self.constant_sets: Dict[str, int] = {}
         
@@ -36,7 +39,7 @@ class LoopEvaluator:
     
     [ARCHITECTURAL NOTE FOR FUTURE AGENTS]:
     This is purely a DATA-FLOW ENGINE. It simulates mathematical instructions (add, sub, etc.) 
-    using Value Set Analysis (VSA) bounds to extract strides (deltas). 
+    using Value Set Analysis (VSA) bounds to extract strides (deltas) and polycyclic patterns. 
     It NEVER reads conditional flags (ZF, CF) and NEVER executes control-flow instructions (jcc).
     Conditional loop-exit instructions are simply bundled into `summary.exit_records` and handed 
     over to `Z3Translator` for actual mathematical control-flow translation.
@@ -66,6 +69,16 @@ class LoopEvaluator:
                         dset = DisjointIntervalSet(k_limit=8)
                         dset.add(Interval(0, 0))
                         state_0.set_register(key, dset)
+                        
+            # Fallback from op_str if operands / regs_write were empty (e.g. in mock test records)
+            if not getattr(record, 'regs_write', []) and not getattr(record, 'operands', []) and getattr(record, 'op_str', None):
+                parts = [p.strip() for p in record.op_str.split(',')]
+                if parts and parts[0] and not parts[0].isdigit() and not parts[0].startswith('0x'):
+                    reg = parts[0]
+                    if reg not in state_0.registers:
+                        dset = DisjointIntervalSet(k_limit=8)
+                        dset.add(Interval(0, 0))
+                        state_0.set_register(reg, dset)
 
     def evaluate(self, loop_block: LoopBlock) -> LoopSummary:
         # Initial Blank Slate
@@ -74,82 +87,78 @@ class LoopEvaluator:
         # Pre-initialize registers and active memory to Symbolic Zero [0, 0] to extract relative Deltas
         self._extract_ops(loop_block.body, state_0)
             
-        # Pass 1: Run the macro-block once
-        state_1 = self._run_pass(loop_block.body, state_0)
-        
-        # Pass 2: Run the macro-block twice
-        state_2 = self._run_pass(loop_block.body, state_1)
+        # Run K passes (K = 8) to discover scalar deltas and polycyclic periodic stride patterns
+        K = 8
+        passes = [state_0]
+        for _ in range(K):
+            next_state = self._run_pass(loop_block.body, passes[-1])
+            passes.append(next_state)
         
         summary = LoopSummary()
         
-        # TODO: Polycyclic Stride Patterns (الأنماط الدورية لمعامل الخطوة)
-        # =========================================================================
-        # Architectural Note from Client Session:
-        # Currently, the engine only extracts a single scalar Delta (Affine Loops).
-        # If a variable increments in a pattern (e.g. +5, +4, +8, +1), the VSA will 
-        # fail to extract a constant delta here, throwing the loop to a symbolic fallback.
-        # 
-        # Future Upgrade Path:
-        # Instead of just diffing Pass 2 and Pass 1, we can run Pass 1..P to find 
-        # a repeating pattern of length P (e.g., [5, 4, 8, 1]).
-        # If found, Z3 can translate this natively without unrolling using:
-        # FullCycles = N / P
-        # Base_Delta = FullCycles * Sum(Pattern)
-        # Remainder = N % P
-        # Extra_Delta = If(Remainder == 1, P[0], If(Remainder == 2, P[0]+P[1], ...))
-        # Reg_new = Reg_old + Base_Delta + Extra_Delta
-        # 
-        # This keeps the O(1) compression magic even for highly obfuscated loops!
-        # =========================================================================
-        
-        # TODO: Multithreading & Symbolic Temporal Dimension (معضلة الزمن الرمزي في الخيوط المتوازية)
-        # =========================================================================
-        # Architectural Dilemma:
-        # Currently, the engine compresses loops into a flat temporal space. But if we support 
-        # multithreading, this breaks. If Thread B reads a memory address modified by Thread A 
-        # *during* Thread A's loop, the exact 'Tick' matters. 
-        # However, the number of iterations (N) is SYMBOLIC (depends on user input). 
-        # If N is symbolic, the duration of the loop is symbolic (Duration = N * Body_Size).
-        # This makes the 'Tick' of EVERY instruction *after* the loop symbolic too!
-        # We cannot simply use VSA intervals for time, because establishing happens-before 
-        # relationships (Tick_A < Tick_B) across threads with symbolic time causes an OOM/Bit-blasting 
-        # explosion in Z3 due to the quadratic number of conditional memory aliases.
-        #
-        # Ideal Solution (Theoretical):
-        # Do not use absolute ticks for concurrent memory resolution. Instead, use 
-        # "Relational Partial Ordering" (Lamport Clocks combined with Memory Versioning). 
-        # The engine must only emit a constraint: `If Thread_B_Read_Val == Thread_A_Loop_Val(k)` 
-        # `Then Require: Tick_B == Tick_A_LoopStart + k * Body_Size`. 
-        # This shifts the burden from "resolving time to find data" to "assuming data to constraint time".
-        # However, until fully proven, this remains a profound architectural dilemma.
-        # =========================================================================
-        
-        # Extract Strides (Deltas) by comparing Pass 2 with Pass 1
-        for reg_name in state_1.registers:
-            dset_1 = state_1.registers[reg_name]
-            dset_2 = state_2.registers[reg_name]
+        # Collect all active registers and memory locations across passes
+        all_tracked = set()
+        for st in passes:
+            all_tracked.update(st.registers.keys())
             
-            if len(dset_1.intervals) == 1 and len(dset_2.intervals) == 1:
-                i1 = dset_1.intervals[0]
-                i2 = dset_2.intervals[0]
+        # Extract Stride Deltas & Polycyclic Patterns
+        for reg_name in all_tracked:
+            values = []
+            valid = True
+            for st in passes:
+                dset = st.registers.get(reg_name)
+                if dset and len(dset.intervals) == 1 and dset.intervals[0].min_val == dset.intervals[0].max_val:
+                    values.append(dset.intervals[0].min_val)
+                else:
+                    valid = False
+                    break
+                    
+            if not valid or len(values) < K + 1:
+                continue
                 
-                # If they are concrete/stable points, we can safely extract delta
-                if i1.min_val == i1.max_val and i2.min_val == i2.max_val:
-                    if i1.min_val == i2.min_val:
-                        # Value didn't change between loops.
-                        # Check if it's genuinely a constant set inside the loop, or just UNMODIFIED.
-                        dset_0 = state_0.registers.get(reg_name)
-                        if dset_0 and len(dset_0.intervals) == 1 and dset_0.intervals[0].min_val == i1.min_val:
-                            # It's identical to state_0 (which was artificially 0). It's UNMODIFIED.
-                            pass
-                        else:
-                            # It changed from state_0 to state_1, but stayed the same in state_2 -> Constant Set
-                            summary.constant_sets[reg_name] = i1.min_val
-                    else:
-                        # Value changed -> Extract the Delta (Stride)
-                        delta = i2.min_val - i1.min_val
-                        summary.deltas[reg_name] = delta
-                        print(f"  [LoopEvaluator] Extracted Delta for {reg_name}: {delta}")
+            v0 = values[0]
+            
+            # 1. Check if unmodified throughout the loop (remains identical to state_0)
+            if all(v == v0 for v in values):
+                continue
+                
+            # 2. Check if Constant Set (changed in Pass 1, but remained constant in all subsequent passes)
+            if all(v == values[1] for v in values[1:]):
+                summary.constant_sets[reg_name] = values[1]
+                continue
+                
+            # 3. Compute step differences (Delta per step) in 64-bit two's complement
+            def to_signed(val: int, bit_width: int = 64) -> int:
+                mask = (1 << bit_width) - 1
+                v = val & mask
+                if v >= (1 << (bit_width - 1)):
+                    return v - (1 << bit_width)
+                return v
+
+            step_deltas = [to_signed(values[i] - values[i - 1]) for i in range(1, len(values))]
+            
+            # 4. Check for Scalar Delta (P = 1)
+            if all(d == step_deltas[0] for d in step_deltas):
+                summary.deltas[reg_name] = step_deltas[0]
+                print(f"  [LoopEvaluator] Extracted Scalar Delta for {reg_name}: {step_deltas[0]}")
+                continue
+                
+            # 5. Check for Polycyclic Stride Pattern (P >= 2)
+            found_period = None
+            for P in range(2, (len(step_deltas) // 2) + 1):
+                pattern_candidate = step_deltas[:P]
+                is_periodic = True
+                for idx in range(P, len(step_deltas)):
+                    if step_deltas[idx] != pattern_candidate[idx % P]:
+                        is_periodic = False
+                        break
+                if is_periodic:
+                    found_period = pattern_candidate
+                    break
+                    
+            if found_period is not None:
+                summary.patterns[reg_name] = found_period
+                print(f"  [LoopEvaluator] Extracted Polycyclic Pattern for {reg_name}: {found_period} (Period P={len(found_period)}, Sum={sum(found_period)})")
                         
         # Delegate ALL control flow and condition analysis to the tracking facade
         cond_str, exit_records = TrackerBridge.evaluate_loop_exit(loop_block)
@@ -171,11 +180,28 @@ class LoopEvaluator:
                 # Nested inner LoopBlock
                 inner_summary = self.evaluate(record)
                 
-                # Apply inner loop's deltas mathematically
+                # Apply inner loop's scalar deltas mathematically
                 for reg_name, delta in inner_summary.deltas.items():
                     dest_dset = new_state.get_register(reg_name)
                     if dest_dset:
                         total_delta = delta * getattr(record, 'iterations', 0)
+                        src_int = Interval(total_delta, total_delta)
+                        new_dset = DisjointIntervalSet(k_limit=8)
+                        for i in dest_dset.intervals:
+                            res = i.add(src_int)
+                            for r in res.intervals:
+                                new_dset.add(r)
+                        new_state.set_register(reg_name, new_dset)
+                        
+                # Apply inner loop's polycyclic patterns mathematically via Closed-Form
+                for reg_name, pattern in inner_summary.patterns.items():
+                    dest_dset = new_state.get_register(reg_name)
+                    if dest_dset:
+                        P = len(pattern)
+                        N_inner = getattr(record, 'iterations', 0)
+                        Q = N_inner // P
+                        R = N_inner % P
+                        total_delta = Q * sum(pattern) + sum(pattern[:R])
                         src_int = Interval(total_delta, total_delta)
                         new_dset = DisjointIntervalSet(k_limit=8)
                         for i in dest_dset.intervals:
@@ -199,9 +225,31 @@ class LoopEvaluator:
         Instruction Dispatcher. Maps x86 instructions to VSA Mathematical Primitives.
         """
         mnemonic = record.mnemonic.lower()
-        op_str = record.op_str
         
-        # Basic Operand Parser utilizing TraceRecord attributes
+        def _get_operand_list():
+            if getattr(record, 'operands', None) and len(record.operands) > 0:
+                return record.operands
+            ops = []
+            if getattr(record, 'op_str', None):
+                tokens = [t.strip() for t in record.op_str.split(',') if t.strip()]
+                for tok in tokens:
+                    try:
+                        if tok.startswith('0x') or tok.startswith('-0x'):
+                            ops.append({'type': 'imm', 'value': int(tok, 16)})
+                        elif tok.isdigit() or (tok.startswith('-') and tok[1:].isdigit()):
+                            ops.append({'type': 'imm', 'value': int(tok, 10)})
+                        elif tok.startswith('[') and tok.endswith(']'):
+                            addr_str = tok[1:-1].strip()
+                            addr_val = int(addr_str, 16) if addr_str.startswith('0x') else int(addr_str)
+                            ops.append({'type': 'mem', 'value': addr_val, 'size': getattr(record, 'size', 4)})
+                        else:
+                            ops.append({'type': 'reg', 'value': tok, 'size': getattr(record, 'size', 4)})
+                    except Exception:
+                        ops.append({'type': 'reg', 'value': tok, 'size': getattr(record, 'size', 4)})
+            return ops
+
+        operands = _get_operand_list()
+
         def get_op_key(op, is_dest=False):
             if op['type'] == 'reg':
                 return op['value']
@@ -209,15 +257,18 @@ class LoopEvaluator:
                 addr_list = record.mem_write if is_dest else record.mem_read
                 if addr_list:
                     addr = addr_list[0]
-                    size = op.get('size', 4) * 8
-                    return f"MEM_{addr}_{size}"
+                else:
+                    addr = op.get('value', 0)
+                size = op.get('size', 4) * 8
+                return f"MEM_{addr}_{size}"
             return None
 
-        if mnemonic == "add" and len(record.operands) == 2:
-            dest = get_op_key(record.operands[0], is_dest=True)
+        if mnemonic == "add" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            src_op = record.operands[1]
+            src_op = operands[1]
             dest_dset = state.get_register(dest)
+            if not dest_dset: return
             
             if src_op['type'] == 'imm':
                 val = src_op['value']
@@ -231,11 +282,12 @@ class LoopEvaluator:
                         new_dset.add(r)
                 state.set_register(dest, new_dset)
                 
-        elif mnemonic == "sub" and len(record.operands) == 2:
-            dest = get_op_key(record.operands[0], is_dest=True)
+        elif mnemonic == "sub" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            src_op = record.operands[1]
+            src_op = operands[1]
             dest_dset = state.get_register(dest)
+            if not dest_dset: return
             
             if src_op['type'] == 'imm':
                 val = src_op['value']
@@ -248,10 +300,10 @@ class LoopEvaluator:
                         new_dset.add(r)
                 state.set_register(dest, new_dset)
                 
-        elif mnemonic == "mov" and len(record.operands) == 2:
-            dest = get_op_key(record.operands[0], is_dest=True)
+        elif mnemonic == "mov" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            src_op = record.operands[1]
+            src_op = operands[1]
             
             if src_op['type'] == 'imm':
                 val = src_op['value']
@@ -262,12 +314,14 @@ class LoopEvaluator:
                 src = get_op_key(src_op, is_dest=False)
                 if src:
                     src_dset = state.get_register(src)
-                    state.set_register(dest, copy.deepcopy(src_dset))
+                    if src_dset:
+                        state.set_register(dest, copy.deepcopy(src_dset))
 
-        elif mnemonic == "inc" and len(record.operands) == 1:
-            dest = get_op_key(record.operands[0], is_dest=True)
+        elif mnemonic == "inc" and len(operands) == 1:
+            dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
             dest_dset = state.get_register(dest)
+            if not dest_dset: return
             src_int = Interval(1, 1)
             new_dset = DisjointIntervalSet(k_limit=8)
             for i in dest_dset.intervals:
@@ -276,10 +330,11 @@ class LoopEvaluator:
                     new_dset.add(r)
             state.set_register(dest, new_dset)
 
-        elif mnemonic == "dec" and len(record.operands) == 1:
-            dest = get_op_key(record.operands[0], is_dest=True)
+        elif mnemonic == "dec" and len(operands) == 1:
+            dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
             dest_dset = state.get_register(dest)
+            if not dest_dset: return
             src_int = Interval(1, 1)
             new_dset = DisjointIntervalSet(k_limit=8)
             for i in dest_dset.intervals:

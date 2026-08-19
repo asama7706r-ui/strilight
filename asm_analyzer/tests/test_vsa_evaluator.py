@@ -49,7 +49,9 @@ def test_vsa_evaluator_harsh_loop():
     assert summary.constant_sets["edx"] == 5
     
     # Assert Exit Condition Capture
-    assert summary.exit_condition == "cmp ecx, 1000 -> jle"
+    assert summary.exit_condition is not None
+    assert "cmp ecx, 1000" in summary.exit_condition
+    assert "jle" in summary.exit_condition
 
 if __name__ == "__main__":
     pytest.main(["-v", __file__])

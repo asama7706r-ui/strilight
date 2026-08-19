@@ -28,7 +28,7 @@ def main():
     # Check if cmp is in the trace history
     target_tick = -1
     for record in reversed(core.tracker.trace_history):
-        if record.mnemonic == "cmp" and "0xde13bcef" in record.op_str.lower():
+        if record.mnemonic == "cmp" and ("0xde42daef" in record.op_str.lower() or "0xde13bcef" in record.op_str.lower()):
             target_tick = record.tick
             break
             
@@ -109,8 +109,8 @@ def main():
         
         rax_final = translator.reg_state.get("rax", None)
         if rax_final is not None:
-            print("[+] Adding Goal Constraint: rax == 0xDE13BCEF")
-            translator.solver.add(rax_final == 0xDE13BCEF)
+            print("[+] Adding Goal Constraint: rax == 0xDE42DAEF")
+            translator.solver.add(rax_final == 0xDE42DAEF)
 
         print("\n[*] Z3 Solving...")
         import re

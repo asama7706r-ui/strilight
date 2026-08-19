@@ -63,11 +63,12 @@ def test_phase2_trigger():
     
     tracker.compress_trace()
     
-    # Track RBX backwards. Since the loop modifies RBX, it should trigger Phase 2.
+    # Track RBX backwards. Since the loop modifies RBX, it triggers Phase 2 (Loop Evaluation).
     descendant = Descendant(target="rbx", at_tick=tick)
     
-    with pytest.raises(NotImplementedError, match="Phase 2 Required"):
-        tracker.build_backward_slice(descendant)
+    slice_res = tracker.build_backward_slice(descendant)
+    assert slice_res is not None
+    assert len(slice_res) > 0
 
 if __name__ == "__main__":
     pytest.main(["-v", "-s", __file__])

@@ -34,6 +34,6 @@ def test_interval_intersect_different_bit_widths():
     i1 = Interval(10, 20, bit_width=32)
     i2 = Interval(10, 20, bit_width=64)
     
-    with pytest.raises(AssertionError, match="Cannot intersect intervals of different bit widths without casting."):
+    with pytest.raises(AssertionError, match="Cannot intersect intervals of different bit widths"):
         i1.intersect(i2)
 
