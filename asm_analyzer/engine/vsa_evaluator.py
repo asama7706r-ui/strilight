@@ -31,6 +31,13 @@ class LoopSummary:
         
         # The dynamic number of iterations this loop ran
         self.iterations: int = 0
+        
+        # Nested inner loop summaries
+        self.inner_summaries: List['LoopSummary'] = []
+        self.direct_deltas: Dict[str, int] = {}
+        self.direct_patterns: Dict[str, List[int]] = {}
+        self.direct_constant_sets: Dict[str, int] = {}
+        self.tick: Optional[int] = None
 
 
 class LoopEvaluator:
@@ -101,6 +108,13 @@ class LoopEvaluator:
         for st in passes:
             all_tracked.update(st.registers.keys())
             
+        def to_signed(val: int, bit_width: int = 64) -> int:
+            mask = (1 << bit_width) - 1
+            v = val & mask
+            if v >= (1 << (bit_width - 1)):
+                return v - (1 << bit_width)
+            return v
+            
         # Extract Stride Deltas & Polycyclic Patterns
         for reg_name in all_tracked:
             values = []
@@ -127,14 +141,6 @@ class LoopEvaluator:
                 summary.constant_sets[reg_name] = values[1]
                 continue
                 
-            # 3. Compute step differences (Delta per step) in 64-bit two's complement
-            def to_signed(val: int, bit_width: int = 64) -> int:
-                mask = (1 << bit_width) - 1
-                v = val & mask
-                if v >= (1 << (bit_width - 1)):
-                    return v - (1 << bit_width)
-                return v
-
             step_deltas = [to_signed(values[i] - values[i - 1]) for i in range(1, len(values))]
             
             # 4. Check for Scalar Delta (P = 1)
@@ -159,9 +165,47 @@ class LoopEvaluator:
             if found_period is not None:
                 summary.patterns[reg_name] = found_period
                 print(f"  [LoopEvaluator] Extracted Polycyclic Pattern for {reg_name}: {found_period} (Period P={len(found_period)}, Sum={sum(found_period)})")
+                
+        # Discover child inner loops
+        for item in loop_block.body:
+            if hasattr(item, 'body'):
+                inner_sum = self.evaluate(item)
+                inner_sum.tick = getattr(item, 'start_tick', 0)
+                summary.inner_summaries.append(inner_sum)
+                
+        # If there are inner loops, also extract direct deltas from outer non-loop instructions
+        if summary.inner_summaries:
+            direct_body = [r for r in loop_block.body if not hasattr(r, 'body')]
+            if direct_body:
+                direct_state_0 = AbstractState()
+                self._extract_ops(direct_body, direct_state_0)
+                direct_passes = [direct_state_0]
+                for _ in range(K):
+                    next_st = self._run_pass(direct_body, direct_passes[-1])
+                    direct_passes.append(next_st)
+                    
+                direct_all = set().union(*(st.registers.keys() for st in direct_passes))
+                for reg_name in direct_all:
+                    vals = []
+                    v_ok = True
+                    for st in direct_passes:
+                        ds = st.registers.get(reg_name)
+                        if ds and len(ds.intervals) == 1 and ds.intervals[0].min_val == ds.intervals[0].max_val:
+                            vals.append(ds.intervals[0].min_val)
+                        else:
+                            v_ok = False
+                            break
+                    if v_ok and len(vals) == K + 1 and not all(v == vals[0] for v in vals):
+                        if all(v == vals[1] for v in vals[1:]):
+                            summary.direct_constant_sets[reg_name] = vals[1]
+                        else:
+                            sd = [to_signed(vals[i] - vals[i-1]) for i in range(1, len(vals))]
+                            if all(d == sd[0] for d in sd):
+                                summary.direct_deltas[reg_name] = sd[0]
+                                print(f"  [LoopEvaluator] Extracted Direct Outer Delta for {reg_name}: {sd[0]}")
                         
         # Delegate ALL control flow and condition analysis to the tracking facade
-        cond_str, exit_records = TrackerBridge.evaluate_loop_exit(loop_block)
+        cond_str, exit_records = TrackerBridge.evaluate_loop_exit(loop_block, induction_vars=set(summary.deltas.keys()))
         print(f"\n[DEBUG TRACKER_BRIDGE] cond_str: {cond_str}")
         print(f"[DEBUG TRACKER_BRIDGE] exit_records: {exit_records}")
         if cond_str:
@@ -263,64 +307,194 @@ class LoopEvaluator:
                 return f"MEM_{addr}_{size}"
             return None
 
+        _REG_TO_BASE = {
+            'eax': 'rax', 'ax': 'rax', 'al': 'rax', 'ah': 'rax', 'rax': 'rax',
+            'ebx': 'rbx', 'bx': 'rbx', 'bl': 'rbx', 'bh': 'rbx', 'rbx': 'rbx',
+            'ecx': 'rcx', 'cx': 'rcx', 'cl': 'rcx', 'ch': 'rcx', 'rcx': 'rcx',
+            'edx': 'rdx', 'dx': 'rdx', 'dl': 'rdx', 'dh': 'rdx', 'rdx': 'rdx',
+            'esi': 'rsi', 'si': 'rsi', 'sil': 'rsi', 'rsi': 'rsi',
+            'edi': 'rdi', 'di': 'rdi', 'dil': 'rdi', 'rdi': 'rdi',
+            'ebp': 'rbp', 'bp': 'rbp', 'bpl': 'rbp', 'rbp': 'rbp',
+            'esp': 'rsp', 'sp': 'rsp', 'spl': 'rsp', 'rsp': 'rsp',
+            'r8d': 'r8', 'r8w': 'r8', 'r8b': 'r8', 'r8': 'r8',
+            'r9d': 'r9', 'r9w': 'r9', 'r9b': 'r9', 'r9': 'r9',
+            'r10d': 'r10', 'r10w': 'r10', 'r10b': 'r10', 'r10': 'r10',
+            'r11d': 'r11', 'r11w': 'r11', 'r11b': 'r11', 'r11': 'r11',
+            'r12d': 'r12', 'r12w': 'r12', 'r12b': 'r12', 'r12': 'r12',
+            'r13d': 'r13', 'r13w': 'r13', 'r13b': 'r13', 'r13': 'r13',
+            'r14d': 'r14', 'r14w': 'r14', 'r14b': 'r14', 'r14': 'r14',
+            'r15d': 'r15', 'r15w': 'r15', 'r15b': 'r15', 'r15': 'r15',
+        }
+
+        def get_dest_dset(dest_key):
+            res = state.get_register(dest_key)
+            if res: return res
+            base = _REG_TO_BASE.get(dest_key, dest_key)
+            return state.get_register(base)
+
+        def set_dest_dset(dest_key, new_dset, size=4):
+            state.set_register(dest_key, new_dset)
+            if dest_key in _REG_TO_BASE:
+                base = _REG_TO_BASE[dest_key]
+                state.set_register(base, copy.deepcopy(new_dset))
+
+        def get_src_dset(src_op):
+            if src_op['type'] == 'imm':
+                val = src_op['value']
+                d = DisjointIntervalSet(k_limit=8)
+                d.add(Interval(val, val))
+                return d
+            elif src_op['type'] in ('reg', 'mem'):
+                src_key = get_op_key(src_op, is_dest=False)
+                if src_key:
+                    res = state.get_register(src_key)
+                    if res: return res
+                    base = _REG_TO_BASE.get(src_key, src_key)
+                    return state.get_register(base)
+            return None
+
+        size = operands[0].get('size', 4) if operands else 4
+
         if mnemonic == "add" and len(operands) == 2:
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            src_op = operands[1]
-            dest_dset = state.get_register(dest)
+            dest_dset = get_dest_dset(dest)
             if not dest_dset: return
+            src_dset = get_src_dset(operands[1])
+            if not src_dset: return
             
-            if src_op['type'] == 'imm':
-                val = src_op['value']
-                src_int = Interval(val, val)
-                
-                # Apply addition to all disjoint fragments
-                new_dset = DisjointIntervalSet(k_limit=8)
-                for i in dest_dset.intervals:
-                    res = i.add(src_int)
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for d_int in dest_dset.intervals:
+                for s_int in src_dset.intervals:
+                    res = d_int.add(s_int)
                     for r in res.intervals:
                         new_dset.add(r)
-                state.set_register(dest, new_dset)
+            set_dest_dset(dest, new_dset, size=size)
                 
         elif mnemonic == "sub" and len(operands) == 2:
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            src_op = operands[1]
-            dest_dset = state.get_register(dest)
+            dest_dset = get_dest_dset(dest)
             if not dest_dset: return
+            src_dset = get_src_dset(operands[1])
+            if not src_dset: return
             
-            if src_op['type'] == 'imm':
-                val = src_op['value']
-                src_int = Interval(val, val)
-                
-                new_dset = DisjointIntervalSet(k_limit=8)
-                for i in dest_dset.intervals:
-                    res = i.sub(src_int)
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for d_int in dest_dset.intervals:
+                for s_int in src_dset.intervals:
+                    res = d_int.sub(s_int)
                     for r in res.intervals:
                         new_dset.add(r)
-                state.set_register(dest, new_dset)
+            set_dest_dset(dest, new_dset, size=size)
                 
         elif mnemonic == "mov" and len(operands) == 2:
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            src_op = operands[1]
-            
-            if src_op['type'] == 'imm':
-                val = src_op['value']
+            src_dset = get_src_dset(operands[1])
+            if src_dset:
+                set_dest_dset(dest, copy.deepcopy(src_dset), size=size)
+
+        elif mnemonic == "movsxd" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            src_dset = get_src_dset(operands[1])
+            if src_dset:
                 new_dset = DisjointIntervalSet(k_limit=8)
-                new_dset.add(Interval(val, val))
-                state.set_register(dest, new_dset)
-            elif src_op['type'] == 'reg' or src_op['type'] == 'mem':
-                src = get_op_key(src_op, is_dest=False)
-                if src:
-                    src_dset = state.get_register(src)
-                    if src_dset:
-                        state.set_register(dest, copy.deepcopy(src_dset))
+                for iv in src_dset.intervals:
+                    v32 = iv.min_val & 0xFFFFFFFF
+                    s64 = (v32 - 0x100000000) if v32 >= 0x80000000 else v32
+                    s64 &= 0xFFFFFFFFFFFFFFFF
+                    new_dset.add(Interval(s64, s64, bit_width=64))
+                set_dest_dset(dest, new_dset, size=8)
+
+        elif mnemonic == "xor" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            src_dset = get_src_dset(operands[1])
+            if not src_dset: return
+            
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for d_int in dest_dset.intervals:
+                for s_int in src_dset.intervals:
+                    res_int = d_int.bitwise_xor(s_int)
+                    new_dset.add(res_int)
+            set_dest_dset(dest, new_dset, size=size)
+
+        elif mnemonic == "and" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            src_dset = get_src_dset(operands[1])
+            if not src_dset: return
+            
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for d_int in dest_dset.intervals:
+                for s_int in src_dset.intervals:
+                    res_int = d_int.bitwise_and(s_int)
+                    new_dset.add(res_int)
+            set_dest_dset(dest, new_dset, size=size)
+
+        elif mnemonic == "or" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            src_dset = get_src_dset(operands[1])
+            if not src_dset: return
+            
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for d_int in dest_dset.intervals:
+                for s_int in src_dset.intervals:
+                    res_int = d_int.bitwise_or(s_int)
+                    new_dset.add(res_int)
+            set_dest_dset(dest, new_dset, size=size)
+
+        elif mnemonic == "shl" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            shift = operands[1]['value'] if operands[1]['type'] == 'imm' else 0
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for iv in dest_dset.intervals:
+                new_dset.add(Interval((iv.min_val << shift) & 0xFFFFFFFF, (iv.max_val << shift) & 0xFFFFFFFF, bit_width=64))
+            set_dest_dset(dest, new_dset, size=size)
+
+        elif mnemonic == "shr" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            shift = operands[1]['value'] if operands[1]['type'] == 'imm' else 0
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for iv in dest_dset.intervals:
+                new_dset.add(Interval((iv.min_val >> shift) & 0xFFFFFFFF, (iv.max_val >> shift) & 0xFFFFFFFF, bit_width=64))
+            set_dest_dset(dest, new_dset, size=size)
+
+        elif mnemonic == "sar" and len(operands) == 2:
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            shift = operands[1]['value'] if operands[1]['type'] == 'imm' else 0
+            bit_w = size * 8
+            def to_s(v):
+                v &= (1 << bit_w) - 1
+                return v - (1 << bit_w) if v >= (1 << (bit_w - 1)) else v
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for iv in dest_dset.intervals:
+                s_min = (to_s(iv.min_val) >> shift) & ((1 << bit_w) - 1)
+                s_max = (to_s(iv.max_val) >> shift) & ((1 << bit_w) - 1)
+                new_dset.add(Interval(min(s_min, s_max), max(s_min, s_max), bit_width=64))
+            set_dest_dset(dest, new_dset, size=size)
 
         elif mnemonic == "inc" and len(operands) == 1:
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            dest_dset = state.get_register(dest)
+            dest_dset = get_dest_dset(dest)
             if not dest_dset: return
             src_int = Interval(1, 1)
             new_dset = DisjointIntervalSet(k_limit=8)
@@ -328,12 +502,12 @@ class LoopEvaluator:
                 res = i.add(src_int)
                 for r in res.intervals:
                     new_dset.add(r)
-            state.set_register(dest, new_dset)
+            set_dest_dset(dest, new_dset, size=size)
 
         elif mnemonic == "dec" and len(operands) == 1:
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
-            dest_dset = state.get_register(dest)
+            dest_dset = get_dest_dset(dest)
             if not dest_dset: return
             src_int = Interval(1, 1)
             new_dset = DisjointIntervalSet(k_limit=8)
@@ -341,4 +515,4 @@ class LoopEvaluator:
                 res = i.sub(src_int)
                 for r in res.intervals:
                     new_dset.add(r)
-            state.set_register(dest, new_dset)
+            set_dest_dset(dest, new_dset, size=size)

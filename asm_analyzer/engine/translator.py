@@ -18,6 +18,7 @@ class Z3Translator:
         self.mem_read_idx = 0
         self.mem_write_idx = 0
         self.target_vars = set()
+        self.tracked_constraints: Dict[str, Tuple[z3.BoolRef, str]] = {}
         self._taint_cache = {}
         self._reg_to_base = {}
         for base, subs in REGISTER_HIERARCHY.items():
@@ -512,12 +513,16 @@ class Z3Translator:
             dst_val, dst_size = self._read_operand(dst)
             src1_val, _ = self._read_operand(src1)
             src2_val, _ = self._read_operand(src2)
-            src1_val, src2_val = self._match_sizes(src1_val, src2_val)
-            exp_src1 = z3.SignExt(dst_size, src1_val)
-            exp_src2 = z3.SignExt(dst_size, src2_val)
-            res = exp_src1 * exp_src2
-            final_res = z3.Extract(dst_size - 1, 0, res)
-            self._write_operand(dst, final_res)
+            if src1_val.size() < dst_size:
+                src1_val = z3.SignExt(dst_size - src1_val.size(), src1_val)
+            elif src1_val.size() > dst_size:
+                src1_val = z3.Extract(dst_size - 1, 0, src1_val)
+            if src2_val.size() < dst_size:
+                src2_val = z3.SignExt(dst_size - src2_val.size(), src2_val)
+            elif src2_val.size() > dst_size:
+                src2_val = z3.Extract(dst_size - 1, 0, src2_val)
+            res = src1_val * src2_val
+            self._write_operand(dst, res)
 
     def _handle_push(self, instr):
         ops = instr.operands
@@ -729,8 +734,16 @@ class Z3Translator:
         if not isinstance(summary, LoopSummary):
             return
 
-        # 1. Generate Symbolic N
-        N = z3.BitVec('LoopCounter', 64)
+        # 1. Generate Unique Symbolic N per LoopBlock
+        loop_tick = getattr(summary, 'tick', None)
+        if loop_tick is not None:
+            loop_var_name = f'LoopCounter_t{loop_tick}'
+        else:
+            loop_var_name = self._get_new_ssa_name('LoopCounter')
+            
+        N = z3.BitVec(loop_var_name, 64)
+        summary.loop_counter_var = N
+        self.latest_loop_counter = N
         
         # 2. Bound N (0 <= N <= 10,000,000)
         self.solver.add(z3.UGE(N, 0))
@@ -770,22 +783,122 @@ class Z3Translator:
             return Q * cycle_sum_val + extra_delta
             
         shadow_subs = []
-            
+        composed_inner_deltas = {}
+        
+        # 3.1. Process Child Inner Loops Symbolically
+        inner_summaries = getattr(summary, 'inner_summaries', [])
+        if inner_summaries:
+            print(f"  [Z3Translator] Found {len(inner_summaries)} Symbolic Child Inner Loop(s)!")
+            for inner_sum in inner_summaries:
+                inner_tick = getattr(inner_sum, 'tick', None)
+                if inner_tick is not None:
+                    inner_var_name = f'LoopCounter_t{inner_tick}'
+                else:
+                    inner_var_name = self._get_new_ssa_name('LoopCounter')
+                    
+                N_inner = z3.BitVec(inner_var_name, 64)
+                inner_sum.loop_counter_var = N_inner
+                self.solver.add(z3.UGE(N_inner, 0))
+                self.solver.add(z3.ULE(N_inner, 10000000))
+                
+                # Apply inner delta to inner control variables (like loop counters)
+                inner_shadow_subs = []
+                for reg_name, delta in getattr(inner_sum, 'deltas', {}).items():
+                    if reg_name.startswith("MEM_"):
+                        parts = reg_name.split("_")
+                        addr = int(parts[1])
+                        size_bits = int(parts[2])
+                        mem_op = {'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}
+                        # Induction variable for an inner loop within an outer loop body starts at 0 at each outer loop iteration
+                        t_before = z3.BitVecVal(0, 64)
+                        t_after = t_before + delta * N_inner if delta != 0 else t_before
+                        t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
+                        self._write_operand(mem_op, t_after_extracted)
+                        t_after_shadow = z3.If(N_inner > 0, t_before + delta * (N_inner - 1), t_before)
+                        t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
+                        inner_shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
+                    else:
+                        base_reg = self._reg_to_base.get(reg_name, reg_name)
+                        t_before = z3.BitVecVal(0, 64)
+                        self._clobber_register(base_reg)
+                        t_after = self._get_phys_reg(base_reg)
+                        if delta != 0:
+                            self.solver.add(t_after == t_before + delta * N_inner)
+                        else:
+                            self.solver.add(t_after == t_before)
+                        t_after_shadow = z3.If(N_inner > 0, t_before + delta * (N_inner - 1), t_before)
+                        t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
+                        inner_shadow_subs.append((t_after, t_after_shadow_extracted))
+                        
+                # Extract inner polycyclic pattern expressions for data flow
+                for reg_name, pattern in getattr(inner_sum, 'patterns', {}).items():
+                    d_expr = _build_polycyclic_delta(N_inner, pattern, 64)
+                    composed_inner_deltas[reg_name] = d_expr
+                    print(f"  [Z3Translator] Built Symbolic Inner Closed-Form Pattern for {reg_name} (Period P={len(pattern)})")
+                    
+                exit_cond_str = getattr(inner_sum, 'exit_condition', '') or ''
+                for reg_name, delta in getattr(inner_sum, 'deltas', {}).items():
+                    if reg_name not in composed_inner_deltas and reg_name not in exit_cond_str:
+                        composed_inner_deltas[reg_name] = z3.BitVecVal(delta, 64) * N_inner
+                        print(f"  [Z3Translator] Built Symbolic Inner Scalar Delta for {reg_name}: {delta} * {N_inner}")
+                        
+                # Translate inner exit condition to bind N_inner
+                if getattr(inner_sum, 'exit_records', None):
+                    self.last_jcc_cond_ast = None
+                    self.last_jcc_jump_taken = None
+                    for record in inner_sum.exit_records:
+                        self.parse_instruction(record)
+                    if self.last_jcc_cond_ast is not None and self.last_jcc_jump_taken is not None:
+                        cond_shadow_ast = z3.substitute(self.last_jcc_cond_ast, *inner_shadow_subs)
+                        expected_shadow_jump_taken = not self.last_jcc_jump_taken
+                        iron_c = cond_shadow_ast if expected_shadow_jump_taken else z3.Not(cond_shadow_ast)
+                        self.add_tracked_constraint(z3.Implies(N_inner > 0, iron_c), f"Inner Loop Exit Iron Constraint (t{inner_tick})")
+                        print(f"  [Z3Translator] Inner Loop Exit Iron Constraint successfully injected for N_inner={N_inner}!")
+
         # 4. Apply Scalar Strides: Reg_new = Reg_old + Delta * N
         print(f"  [Z3Translator] Loop Summary Deltas: {summary.deltas}")
         for reg_name, delta in summary.deltas.items():
+            if reg_name in composed_inner_deltas:
+                step_delta = composed_inner_deltas[reg_name]
+                if reg_name.startswith("MEM_"):
+                    parts = reg_name.split("_")
+                    addr = int(parts[1])
+                    size_bits = int(parts[2])
+                    t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
+                    if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
+                    t_after = t_before + step_delta * N
+                    
+                    t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
+                    self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
+                    
+                    t_after_shadow = z3.If(N > 0, t_before + step_delta * (N - 1), t_before)
+                    t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
+                    shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
+                    continue
+                    
+                base_reg = self._reg_to_base.get(reg_name, reg_name)
+                t_before = self._get_phys_reg(base_reg)
+                self._clobber_register(base_reg)
+                t_after = self._get_phys_reg(base_reg)
+                self.solver.add(t_after == t_before + step_delta * N)
+                t_after_shadow = z3.If(N > 0, t_before + step_delta * (N - 1), t_before)
+                t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
+                shadow_subs.append((t_after, t_after_shadow_extracted))
+                continue
+                
+            direct_delta = summary.direct_deltas.get(reg_name, delta)
             if reg_name.startswith("MEM_"):
                 parts = reg_name.split("_")
                 addr = int(parts[1])
                 size_bits = int(parts[2])
                 t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
                 if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
-                t_after = t_before + delta * N if delta != 0 else t_before
+                t_after = t_before + direct_delta * N if direct_delta != 0 else t_before
                 
                 t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
                 self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
                 
-                t_after_shadow = z3.If(N > 0, t_before + delta * (N - 1), t_before)
+                t_after_shadow = z3.If(N > 0, t_before + direct_delta * (N - 1), t_before)
                 t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
                 shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
                 continue
@@ -797,12 +910,12 @@ class Z3Translator:
             self._clobber_register(base_reg)
             t_after = self._get_phys_reg(base_reg)
             
-            if delta != 0:
-                self.solver.add(t_after == t_before + delta * N)
+            if direct_delta != 0:
+                self.solver.add(t_after == t_before + direct_delta * N)
             else:
                 self.solver.add(t_after == t_before)
                 
-            t_after_shadow = z3.If(N > 0, t_before + delta * (N - 1), t_before)
+            t_after_shadow = z3.If(N > 0, t_before + direct_delta * (N - 1), t_before)
             t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
             shadow_subs.append((t_after, t_after_shadow_extracted))
 
@@ -812,6 +925,8 @@ class Z3Translator:
             print(f"  [Z3Translator] Loop Summary Polycyclic Patterns: {patterns}")
             N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
             for reg_name, pattern in patterns.items():
+                if reg_name in composed_inner_deltas:
+                    continue
                 total_delta = _build_polycyclic_delta(N, pattern, 64)
                 total_delta_prev = _build_polycyclic_delta(N_prev, pattern, 64)
                 
@@ -885,5 +1000,78 @@ class Z3Translator:
                 else:
                     iron_constraint = z3.Not(cond_shadow_ast)
                     
-                self.solver.add(z3.Implies(N > 0, iron_constraint))
+                self.add_tracked_constraint(z3.Implies(N > 0, iron_constraint), f"Outer Loop Exit Iron Constraint (t{loop_tick})")
                 print("  -> [OK] Loop exit equation successfully built and injected into solver.")
+
+    def add_tracked_constraint(self, constraint: z3.BoolRef, label: str):
+        """
+        Adds a critical semantic constraint (e.g. Loop Equation, Exit Bound, Target Goal)
+        with a human-readable label for fast, pinpoint Unsat Core diagnosis.
+        """
+        self.solver.add(constraint)
+        tracker_name = f"tracker_{len(self.tracked_constraints)}_{re.sub(r'[^a-zA-Z0-9_]', '_', label)}"
+        self.tracked_constraints[tracker_name] = (constraint, label)
+
+    def explain_unsat(self) -> List[str]:
+        """
+        Fast, high-level Unsat Core diagnostics focusing specifically on 
+        Loop Equations, Loop Exits, Key Bounds, and Goal Target constraints.
+        """
+        # 1. If tracked_constraints exist, run fast targeted check
+        if self.tracked_constraints:
+            solver = z3.Solver()
+            tracked_exprs = {c[0] for c in self.tracked_constraints.values()}
+            for assertion in self.solver.assertions():
+                if assertion not in tracked_exprs:
+                    solver.add(assertion)
+                    
+            tracker_vars = []
+            named_trackers = {}
+            for tracker_name, (constraint, label) in self.tracked_constraints.items():
+                p = z3.Bool(tracker_name)
+                solver.add(z3.Implies(p, constraint))
+                tracker_vars.append(p)
+                named_trackers[str(p)] = (label, constraint)
+                
+            print("\n[*] Running Fast Targeted Unsat Core Diagnostics on Loop & Semantic Constraints...")
+            if solver.check(tracker_vars) == z3.unsat:
+                core = solver.unsat_core()
+                results = []
+                print(f"\n[!] ==================== UNSAT CORE DIAGNOSTICS ====================")
+                print(f"[!] Found {len(core)} conflicting semantic constraints in Z3:")
+                for p in core:
+                    label, expr = named_trackers[str(p)]
+                    msg = f"  -> [{label}]: {expr}"
+                    print(msg)
+                    results.append(msg)
+                print(f"[!] ==================================================================")
+                return results
+
+        # 2. Fallback: Check full assertion core
+        print("\n[*] Checking full assertion Unsat Core in Z3...")
+        fallback_solver = z3.Solver()
+        full_named = {}
+        full_trackers = []
+        for idx, assertion in enumerate(self.solver.assertions()):
+            p = z3.Bool(f"ssa_p_{idx}")
+            fallback_solver.add(z3.Implies(p, assertion))
+            full_trackers.append(p)
+            full_named[str(p)] = assertion
+            
+        if fallback_solver.check(full_trackers) == z3.unsat:
+            core = fallback_solver.unsat_core()
+            results = []
+            print(f"\n[!] ==================== UNSAT CORE DIAGNOSTICS ====================")
+            print(f"[!] Found {len(core)} conflicting mathematical assertions in Z3:")
+            for p in core:
+                ast_str = str(full_named[str(p)])
+                if len(ast_str) > 150:
+                    ast_str = ast_str[:150] + "..."
+                msg = f"  -> {ast_str}"
+                print(msg)
+                results.append(msg)
+            print(f"[!] ==================================================================")
+            return results
+        else:
+            print("[*] All individual tracked assertions are mutually consistent (Unsat caused by optimization objective or timeout).")
+            return []

@@ -56,7 +56,7 @@ def test_polycyclic_pattern_direct():
     for a in translator.solver.assertions():
         solver.add(a)
         
-    N = z3.BitVec('LoopCounter', 64)
+    N = translator.latest_loop_counter
     rax_var = translator.reg_state['rax']
     
     # Fix N = 7 and solve for rax
@@ -83,7 +83,7 @@ def test_polycyclic_z3_solve_exact_n():
     for a in translator.solver.assertions():
         solver.add(a)
         
-    N = z3.BitVec('LoopCounter', 64)
+    N = translator.latest_loop_counter
     rax_var = translator.reg_state['rax']
     rax_initial = z3.BitVec('rax_t0', 64)
     
@@ -131,7 +131,7 @@ def test_polycyclic_memory_pattern():
     for a in translator.solver.assertions():
         solver.add(a)
         
-    N = z3.BitVec('LoopCounter', 64)
+    N = translator.latest_loop_counter
     solver.add(N == 5)
     assert solver.check() == z3.sat
 

@@ -15,7 +15,7 @@ def main():
     target_exe = os.path.join(app_dir, "crackme_boss.exe")
     
     print("[*] Initializing AnalyzerCore with Speakeasy backend...")
-    core = AnalyzerCore(target_path=[target_exe, "5001"])
+    core = AnalyzerCore(target_path=[target_exe, "1789"])
     
     print("[*] Setting up hooks...")
     setup_hooks(core)
@@ -68,7 +68,8 @@ def main():
             
         key_var = z3.BitVec("key_input", 32)
         translator.target_vars.add(key_var)
-        translator.solver.add(key_var > 1000)
+        translator.add_tracked_constraint(key_var >= 1000, "Key Lower Bound: key_input >= 1000")
+        translator.add_tracked_constraint(key_var < 2000, "Key Upper Bound: key_input < 2000")
         
         # Clear previous assumptions
         check_key_start_tick = 0
@@ -110,7 +111,7 @@ def main():
         rax_final = translator.reg_state.get("rax", None)
         if rax_final is not None:
             print("[+] Adding Goal Constraint: rax == 0xDE42DAEF")
-            translator.solver.add(rax_final == 0xDE42DAEF)
+            translator.add_tracked_constraint(rax_final == 0xDE42DAEF, "Goal Target: rax == 0xDE42DAEF")
 
         print("\n[*] Z3 Solving...")
         import re
@@ -133,6 +134,7 @@ def main():
                 print(f"[SUCCESS] {taint_str} {var_name} = {model[d]}")
         else:
             print("\n[!] Z3 returned UNSAT. No solution found!")
+            translator.explain_unsat()
     else:
         print("[-] Target not found!")
 

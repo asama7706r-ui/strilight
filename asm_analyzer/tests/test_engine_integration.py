@@ -75,7 +75,7 @@ def test_full_engine_integration_with_optimizer():
     # We can fetch it from the model by finding the declaration.
     n_val = None
     for d in model.decls():
-        if d.name() == 'LoopCounter':
+        if d.name().startswith('LoopCounter'):
             n_val = model[d].as_long()
             break
 
@@ -119,7 +119,7 @@ def test_full_engine_integration_with_optimizer():
     
     n_val2 = None
     for d in model2.decls():
-        if d.name() == 'LoopCounter':
+        if d.name().startswith('LoopCounter'):
             n_val2 = model2[d].as_long()
             break
             

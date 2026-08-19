@@ -141,6 +141,16 @@ def test_translator_mul():
     
     assert get_value(translator, "eax") == 6
 
+def test_translator_explain_unsat():
+    translator = Z3Translator()
+    x = z3.BitVec("x", 32)
+    translator.solver.add(x == 5)
+    translator.solver.add(x == 10) # Direct contradiction
+    
+    assert translator.solver.check() == z3.unsat
+    core = translator.explain_unsat()
+    assert len(core) == 2
+
 def test_translator_push_pop():
     translator = Z3Translator()
     

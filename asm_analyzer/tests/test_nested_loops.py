@@ -80,3 +80,52 @@ def test_vsa_evaluator_nested_loops():
     
     assert summary.deltas["eax"] == 1
     assert summary.deltas["ebx"] == 50
+
+def test_symbolic_nested_loops_z3_composition():
+    """
+    Test that Z3 can solve for both N_outer and N_inner simultaneously,
+    where N_inner drives an inner polycyclic pattern [86, 85] and N_outer repeats it!
+    """
+    import z3
+    from asm_analyzer.engine.vsa_evaluator import LoopSummary
+    from asm_analyzer.engine.translator import Z3Translator
+    
+    # 1. Build Inner Loop Summary (Polycyclic pattern [86, 85])
+    inner_sum = LoopSummary()
+    inner_sum.tick = 20
+    inner_sum.patterns["rax"] = [86, 85] # P=2, Sum=171
+    inner_sum.deltas["rdx"] = 1 # inner counter
+    
+    # 2. Build Outer Loop Summary
+    outer_sum = LoopSummary()
+    outer_sum.tick = 10
+    outer_sum.inner_summaries = [inner_sum]
+    outer_sum.direct_deltas["rcx"] = 1 # outer counter
+    outer_sum.deltas["rcx"] = 1
+    outer_sum.deltas["rax"] = 171
+    
+    translator = Z3Translator()
+    translator.translate_loop_summary(outer_sum, max_iterations=1000)
+    
+    solver = z3.Solver()
+    for a in translator.solver.assertions():
+        solver.add(a)
+        
+    N_outer = z3.BitVec('LoopCounter_t10', 64)
+    N_inner = z3.BitVec('LoopCounter_t20', 64)
+    rax_final = translator.reg_state['rax']
+    rax_init = z3.BitVec('rax_t0', 64)
+    
+    # Target: Initial rax = 0. We run outer loop 10 times.
+    # We want rax_final to reach 2570.
+    # For N_inner = 3: inner_delta = 86 + 85 + 86 = 257.
+    # Total rax = 10 * 257 = 2570!
+    solver.add(rax_init == 0)
+    solver.add(N_outer == 10)
+    solver.add(rax_final == 2570)
+    
+    assert solver.check() == z3.sat
+    m = solver.model()
+    solved_n_inner = m.eval(N_inner).as_long()
+    assert solved_n_inner == 3
+    print(f"\n[SUCCESS] Z3 solved N_inner = {solved_n_inner} (expected 3) for target 2570!")
