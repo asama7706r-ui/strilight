@@ -269,35 +269,38 @@ class LoopEvaluator:
             
         return new_state
         
+    def _get_operand_list(self, record):
+        if getattr(record, 'operands', None) and len(record.operands) > 0:
+            return record.operands
+        ops = []
+        if getattr(record, 'op_str', None):
+            tokens = [t.strip() for t in record.op_str.split(',') if t.strip()]
+            for tok in tokens:
+                try:
+                    if tok.startswith('0x') or tok.startswith('-0x'):
+                        ops.append({'type': 'imm', 'value': int(tok, 16)})
+                    elif tok.isdigit() or (tok.startswith('-') and tok[1:].isdigit()):
+                        ops.append({'type': 'imm', 'value': int(tok, 10)})
+                    elif tok.startswith('[') and tok.endswith(']'):
+                        addr_str = tok[1:-1].strip()
+                        addr_val = int(addr_str, 16) if addr_str.startswith('0x') else int(addr_str)
+                        ops.append({'type': 'mem', 'value': addr_val, 'size': getattr(record, 'size', 4)})
+                    else:
+                        ops.append({'type': 'reg', 'value': tok, 'size': getattr(record, 'size', 4)})
+                except Exception:
+                    ops.append({'type': 'reg', 'value': tok, 'size': getattr(record, 'size', 4)})
+        return ops
+
     def _dispatch_instruction(self, record, state: AbstractState):
         """
         Instruction Dispatcher. Maps x86 instructions to VSA Mathematical Primitives.
         """
         mnemonic = record.mnemonic.lower()
-        
-        def _get_operand_list():
-            if getattr(record, 'operands', None) and len(record.operands) > 0:
-                return record.operands
-            ops = []
-            if getattr(record, 'op_str', None):
-                tokens = [t.strip() for t in record.op_str.split(',') if t.strip()]
-                for tok in tokens:
-                    try:
-                        if tok.startswith('0x') or tok.startswith('-0x'):
-                            ops.append({'type': 'imm', 'value': int(tok, 16)})
-                        elif tok.isdigit() or (tok.startswith('-') and tok[1:].isdigit()):
-                            ops.append({'type': 'imm', 'value': int(tok, 10)})
-                        elif tok.startswith('[') and tok.endswith(']'):
-                            addr_str = tok[1:-1].strip()
-                            addr_val = int(addr_str, 16) if addr_str.startswith('0x') else int(addr_str)
-                            ops.append({'type': 'mem', 'value': addr_val, 'size': getattr(record, 'size', 4)})
-                        else:
-                            ops.append({'type': 'reg', 'value': tok, 'size': getattr(record, 'size', 4)})
-                    except Exception:
-                        ops.append({'type': 'reg', 'value': tok, 'size': getattr(record, 'size', 4)})
-            return ops
+        operands = self._get_operand_list(record)
+        if not operands:
+            return
 
-        operands = _get_operand_list()
+        size = operands[0].get('size', 4)
 
         def get_op_key(op, is_dest=False):
             if op['type'] == 'reg':
@@ -308,8 +311,8 @@ class LoopEvaluator:
                     addr = addr_list[0]
                 else:
                     addr = op.get('value', 0)
-                size = op.get('size', 4) * 8
-                return f"MEM_{addr}_{size}"
+                mem_size = op.get('size', 4) * 8
+                return f"MEM_{addr}_{mem_size}"
             return None
 
         def get_dest_dset(dest_key):
@@ -318,7 +321,7 @@ class LoopEvaluator:
             base = REG_TO_BASE.get(dest_key, dest_key)
             return state.get_register(base)
 
-        def set_dest_dset(dest_key, new_dset, size=4):
+        def set_dest_dset(dest_key, new_dset, dst_size=4):
             state.set_register(dest_key, new_dset)
             if dest_key in REG_TO_BASE:
                 base = REG_TO_BASE[dest_key]
@@ -339,48 +342,83 @@ class LoopEvaluator:
                     return state.get_register(base)
             return None
 
-        size = operands[0].get('size', 4) if operands else 4
+        # Generic Helper for Binary Arithmetic & Bitwise Logic
+        def _eval_binary_op(op_func):
+            if len(operands) < 2: return
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            src_dset = get_src_dset(operands[1])
+            if not src_dset: return
 
-        if mnemonic == "add" and len(operands) == 2:
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for d_int in dest_dset.intervals:
+                for s_int in src_dset.intervals:
+                    res = op_func(d_int, s_int)
+                    if isinstance(res, DisjointIntervalSet):
+                        for r in res.intervals:
+                            new_dset.add(r)
+                    elif res is not None:
+                        new_dset.add(res)
+            set_dest_dset(dest, new_dset, size)
+
+        # Generic Helper for Unary Increment/Decrement
+        def _eval_unary_op(is_inc: bool):
+            if len(operands) < 1: return
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
             dest_dset = get_dest_dset(dest)
             if not dest_dset: return
-            src_dset = get_src_dset(operands[1])
-            if not src_dset: return
-            
+
+            step_int = Interval(1, 1)
             new_dset = DisjointIntervalSet(k_limit=8)
             for d_int in dest_dset.intervals:
-                for s_int in src_dset.intervals:
-                    res = d_int.add(s_int)
-                    for r in res.intervals:
-                        new_dset.add(r)
-            set_dest_dset(dest, new_dset, size=size)
-                
-        elif mnemonic == "sub" and len(operands) == 2:
+                res = d_int.add(step_int) if is_inc else d_int.sub(step_int)
+                for r in res.intervals:
+                    new_dset.add(r)
+            set_dest_dset(dest, new_dset, size)
+
+        # Generic Helper for Bit Shifts
+        def _eval_shift_op(shift_type: str):
+            if len(operands) < 2: return
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
             dest_dset = get_dest_dset(dest)
             if not dest_dset: return
-            src_dset = get_src_dset(operands[1])
-            if not src_dset: return
-            
+
+            shift = operands[1]['value'] if operands[1]['type'] == 'imm' else 0
             new_dset = DisjointIntervalSet(k_limit=8)
-            for d_int in dest_dset.intervals:
-                for s_int in src_dset.intervals:
-                    res = d_int.sub(s_int)
-                    for r in res.intervals:
-                        new_dset.add(r)
-            set_dest_dset(dest, new_dset, size=size)
-                
-        elif mnemonic == "mov" and len(operands) == 2:
+
+            if shift_type == 'shl':
+                for iv in dest_dset.intervals:
+                    new_dset.add(Interval((iv.min_val << shift) & 0xFFFFFFFF, (iv.max_val << shift) & 0xFFFFFFFF, bit_width=64))
+            elif shift_type == 'shr':
+                for iv in dest_dset.intervals:
+                    new_dset.add(Interval((iv.min_val >> shift) & 0xFFFFFFFF, (iv.max_val >> shift) & 0xFFFFFFFF, bit_width=64))
+            elif shift_type == 'sar':
+                bit_w = size * 8
+                def to_s(v):
+                    v &= (1 << bit_w) - 1
+                    return v - (1 << bit_w) if v >= (1 << (bit_w - 1)) else v
+                for iv in dest_dset.intervals:
+                    s_min = (to_s(iv.min_val) >> shift) & ((1 << bit_w) - 1)
+                    s_max = (to_s(iv.max_val) >> shift) & ((1 << bit_w) - 1)
+                    new_dset.add(Interval(min(s_min, s_max), max(s_min, s_max), bit_width=64))
+
+            set_dest_dset(dest, new_dset, size)
+
+        # Dedicated Data Movement Handlers
+        def _eval_mov():
+            if len(operands) < 2: return
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
             src_dset = get_src_dset(operands[1])
             if src_dset:
-                set_dest_dset(dest, copy.deepcopy(src_dset), size=size)
+                set_dest_dset(dest, copy.deepcopy(src_dset), size)
 
-        elif mnemonic == "movsxd" and len(operands) == 2:
+        def _eval_movsxd():
+            if len(operands) < 2: return
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
             src_dset = get_src_dset(operands[1])
@@ -391,114 +429,31 @@ class LoopEvaluator:
                     s64 = (v32 - 0x100000000) if v32 >= 0x80000000 else v32
                     s64 &= 0xFFFFFFFFFFFFFFFF
                     new_dset.add(Interval(s64, s64, bit_width=64))
-                set_dest_dset(dest, new_dset, size=8)
+                set_dest_dset(dest, new_dset, dst_size=8)
 
-        elif mnemonic == "xor" and len(operands) == 2:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            src_dset = get_src_dset(operands[1])
-            if not src_dset: return
-            
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for d_int in dest_dset.intervals:
-                for s_int in src_dset.intervals:
-                    res_int = d_int.bitwise_xor(s_int)
-                    new_dset.add(res_int)
-            set_dest_dset(dest, new_dset, size=size)
+        # Categorized Handler Dispatch Table
+        handlers = {
+            # Data Movement
+            'mov': _eval_mov,
+            'movzx': _eval_mov,
+            'movsxd': _eval_movsxd,
+            'movsx': _eval_movsxd,
 
-        elif mnemonic == "and" and len(operands) == 2:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            src_dset = get_src_dset(operands[1])
-            if not src_dset: return
-            
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for d_int in dest_dset.intervals:
-                for s_int in src_dset.intervals:
-                    res_int = d_int.bitwise_and(s_int)
-                    new_dset.add(res_int)
-            set_dest_dset(dest, new_dset, size=size)
+            # Arithmetic & Bitwise Logic
+            'add': lambda: _eval_binary_op(lambda d, s: d.add(s)),
+            'sub': lambda: _eval_binary_op(lambda d, s: d.sub(s)),
+            'xor': lambda: _eval_binary_op(lambda d, s: d.bitwise_xor(s)),
+            'and': lambda: _eval_binary_op(lambda d, s: d.bitwise_and(s)),
+            'or':  lambda: _eval_binary_op(lambda d, s: d.bitwise_or(s)),
+            'inc': lambda: _eval_unary_op(is_inc=True),
+            'dec': lambda: _eval_unary_op(is_inc=False),
 
-        elif mnemonic == "or" and len(operands) == 2:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            src_dset = get_src_dset(operands[1])
-            if not src_dset: return
-            
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for d_int in dest_dset.intervals:
-                for s_int in src_dset.intervals:
-                    res_int = d_int.bitwise_or(s_int)
-                    new_dset.add(res_int)
-            set_dest_dset(dest, new_dset, size=size)
+            # Shifts
+            'shl': lambda: _eval_shift_op('shl'),
+            'shr': lambda: _eval_shift_op('shr'),
+            'sar': lambda: _eval_shift_op('sar'),
+        }
 
-        elif mnemonic == "shl" and len(operands) == 2:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            shift = operands[1]['value'] if operands[1]['type'] == 'imm' else 0
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for iv in dest_dset.intervals:
-                new_dset.add(Interval((iv.min_val << shift) & 0xFFFFFFFF, (iv.max_val << shift) & 0xFFFFFFFF, bit_width=64))
-            set_dest_dset(dest, new_dset, size=size)
-
-        elif mnemonic == "shr" and len(operands) == 2:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            shift = operands[1]['value'] if operands[1]['type'] == 'imm' else 0
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for iv in dest_dset.intervals:
-                new_dset.add(Interval((iv.min_val >> shift) & 0xFFFFFFFF, (iv.max_val >> shift) & 0xFFFFFFFF, bit_width=64))
-            set_dest_dset(dest, new_dset, size=size)
-
-        elif mnemonic == "sar" and len(operands) == 2:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            shift = operands[1]['value'] if operands[1]['type'] == 'imm' else 0
-            bit_w = size * 8
-            def to_s(v):
-                v &= (1 << bit_w) - 1
-                return v - (1 << bit_w) if v >= (1 << (bit_w - 1)) else v
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for iv in dest_dset.intervals:
-                s_min = (to_s(iv.min_val) >> shift) & ((1 << bit_w) - 1)
-                s_max = (to_s(iv.max_val) >> shift) & ((1 << bit_w) - 1)
-                new_dset.add(Interval(min(s_min, s_max), max(s_min, s_max), bit_width=64))
-            set_dest_dset(dest, new_dset, size=size)
-
-        elif mnemonic == "inc" and len(operands) == 1:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            src_int = Interval(1, 1)
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for i in dest_dset.intervals:
-                res = i.add(src_int)
-                for r in res.intervals:
-                    new_dset.add(r)
-            set_dest_dset(dest, new_dset, size=size)
-
-        elif mnemonic == "dec" and len(operands) == 1:
-            dest = get_op_key(operands[0], is_dest=True)
-            if not dest: return
-            dest_dset = get_dest_dset(dest)
-            if not dest_dset: return
-            src_int = Interval(1, 1)
-            new_dset = DisjointIntervalSet(k_limit=8)
-            for i in dest_dset.intervals:
-                res = i.sub(src_int)
-                for r in res.intervals:
-                    new_dset.add(r)
-            set_dest_dset(dest, new_dset, size=size)
+        handler = handlers.get(mnemonic)
+        if handler:
+            handler()
