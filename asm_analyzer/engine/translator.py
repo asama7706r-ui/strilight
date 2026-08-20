@@ -21,7 +21,100 @@ class Z3Translator:
         self.tracked_constraints: Dict[str, Tuple[z3.BoolRef, str]] = {}
         self._taint_cache = {}
         self._reg_to_base = REG_TO_BASE
-        self.handlers = {'mov': self._handle_mov, 'movzx': self._handle_mov, 'movsx': self._handle_mov, 'movsxd': self._handle_mov, 'lea': self._handle_lea, 'add': self._handle_math, 'sub': self._handle_math, 'xor': self._handle_math, 'and': self._handle_math, 'or': self._handle_math, 'cmp': self._handle_math, 'test': self._handle_math, 'inc': self._handle_inc_dec, 'dec': self._handle_inc_dec, 'shl': self._handle_shift, 'shr': self._handle_shift, 'sar': self._handle_shift, 'mul': self._handle_mul, 'imul': self._handle_mul, 'push': self._handle_push, 'pop': self._handle_pop, 'cdqe': self._handle_cdqe, 'jmp': self._handle_jmp, 'call': self._handle_call, 'ret': self._handle_ret, 'cmpxchg': self._handle_cmpxchg, 'lock cmpxchg': self._handle_cmpxchg, 'xchg': self._handle_xchg, 'lock xchg': self._handle_xchg, 'je': self._handle_jcc, 'jz': self._handle_jcc, 'jne': self._handle_jcc, 'jnz': self._handle_jcc, 'ja': self._handle_jcc, 'jnbe': self._handle_jcc, 'jae': self._handle_jcc, 'jnb': self._handle_jcc, 'jnc': self._handle_jcc, 'jb': self._handle_jcc, 'jc': self._handle_jcc, 'jnae': self._handle_jcc, 'jbe': self._handle_jcc, 'jna': self._handle_jcc, 'jg': self._handle_jcc, 'jnle': self._handle_jcc, 'jge': self._handle_jcc, 'jnl': self._handle_jcc, 'jl': self._handle_jcc, 'jnge': self._handle_jcc, 'jle': self._handle_jcc, 'jng': self._handle_jcc, 'js': self._handle_jcc, 'jns': self._handle_jcc, 'jo': self._handle_jcc, 'jno': self._handle_jcc, 'sete': self._handle_setcc, 'setz': self._handle_setcc, 'setne': self._handle_setcc, 'setnz': self._handle_setcc, 'seta': self._handle_setcc, 'setnbe': self._handle_setcc, 'setae': self._handle_setcc, 'setnb': self._handle_setcc, 'setnc': self._handle_setcc, 'setb': self._handle_setcc, 'setc': self._handle_setcc, 'setnae': self._handle_setcc, 'setbe': self._handle_setcc, 'setna': self._handle_setcc, 'setg': self._handle_setcc, 'setnle': self._handle_setcc, 'setge': self._handle_setcc, 'setnl': self._handle_setcc, 'setl': self._handle_setcc, 'setnge': self._handle_setcc, 'setle': self._handle_setcc, 'setng': self._handle_setcc, 'sets': self._handle_setcc, 'setns': self._handle_setcc, 'seto': self._handle_setcc, 'setno': self._handle_setcc}
+        self.handlers = {
+            # Data Movement
+            'mov': self._handle_mov,
+            'movzx': self._handle_mov,
+            'movsx': self._handle_mov,
+            'movsxd': self._handle_mov,
+            'lea': self._handle_lea,
+            'cdqe': self._handle_cdqe,
+
+            # Arithmetic & Logic
+            'add': self._handle_math,
+            'sub': self._handle_math,
+            'xor': self._handle_math,
+            'and': self._handle_math,
+            'or': self._handle_math,
+            'cmp': self._handle_math,
+            'test': self._handle_math,
+            'inc': self._handle_inc_dec,
+            'dec': self._handle_inc_dec,
+            'shl': self._handle_shift,
+            'shr': self._handle_shift,
+            'sar': self._handle_shift,
+            'mul': self._handle_mul,
+            'imul': self._handle_mul,
+
+            # Stack & Control Flow
+            'push': self._handle_push,
+            'pop': self._handle_pop,
+            'jmp': self._handle_jmp,
+            'call': self._handle_call,
+            'ret': self._handle_ret,
+
+            # Atomic & Exchange
+            'cmpxchg': self._handle_cmpxchg,
+            'lock cmpxchg': self._handle_cmpxchg,
+            'xchg': self._handle_xchg,
+            'lock xchg': self._handle_xchg,
+
+            # Conditional Jumps (Jcc)
+            'je': self._handle_jcc,
+            'jz': self._handle_jcc,
+            'jne': self._handle_jcc,
+            'jnz': self._handle_jcc,
+            'ja': self._handle_jcc,
+            'jnbe': self._handle_jcc,
+            'jae': self._handle_jcc,
+            'jnb': self._handle_jcc,
+            'jnc': self._handle_jcc,
+            'jb': self._handle_jcc,
+            'jc': self._handle_jcc,
+            'jnae': self._handle_jcc,
+            'jbe': self._handle_jcc,
+            'jna': self._handle_jcc,
+            'jg': self._handle_jcc,
+            'jnle': self._handle_jcc,
+            'jge': self._handle_jcc,
+            'jnl': self._handle_jcc,
+            'jl': self._handle_jcc,
+            'jnge': self._handle_jcc,
+            'jle': self._handle_jcc,
+            'jng': self._handle_jcc,
+            'js': self._handle_jcc,
+            'jns': self._handle_jcc,
+            'jo': self._handle_jcc,
+            'jno': self._handle_jcc,
+
+            # Conditional Sets (Setcc)
+            'sete': self._handle_setcc,
+            'setz': self._handle_setcc,
+            'setne': self._handle_setcc,
+            'setnz': self._handle_setcc,
+            'seta': self._handle_setcc,
+            'setnbe': self._handle_setcc,
+            'setae': self._handle_setcc,
+            'setnb': self._handle_setcc,
+            'setnc': self._handle_setcc,
+            'setb': self._handle_setcc,
+            'setc': self._handle_setcc,
+            'setnae': self._handle_setcc,
+            'setbe': self._handle_setcc,
+            'setna': self._handle_setcc,
+            'setg': self._handle_setcc,
+            'setnle': self._handle_setcc,
+            'setge': self._handle_setcc,
+            'setnl': self._handle_setcc,
+            'setl': self._handle_setcc,
+            'setnge': self._handle_setcc,
+            'setle': self._handle_setcc,
+            'setng': self._handle_setcc,
+            'sets': self._handle_setcc,
+            'setns': self._handle_setcc,
+            'seto': self._handle_setcc,
+            'setno': self._handle_setcc,
+        }
 
     def _get_new_ssa_name(self, name: str) -> str:
         if self.current_instr:
