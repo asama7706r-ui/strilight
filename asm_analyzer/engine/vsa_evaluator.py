@@ -5,7 +5,7 @@ if TYPE_CHECKING:
 from asm_analyzer.engine.abstract_state import AbstractState
 from asm_analyzer.pruning.interval import Interval, DisjointIntervalSet
 from asm_analyzer.engine.loop_compressor import LoopBlock
-from asm_analyzer.engine.x86_defs import get_instruction_type, get_flags_read
+from asm_analyzer.engine.x86_defs import get_instruction_type, get_flags_read, REG_TO_BASE
 from asm_analyzer.engine.tracker_bridge import TrackerBridge
 class LoopSummary:
     """
@@ -88,6 +88,10 @@ class LoopEvaluator:
                         state_0.set_register(reg, dset)
 
     def evaluate(self, loop_block: LoopBlock) -> LoopSummary:
+        # Fast path: return an isolated copy of pre-computed mathematical summary
+        if getattr(loop_block, '_cached_summary', None) is not None:
+            return copy.copy(loop_block._cached_summary)
+
         # Initial Blank Slate
         state_0 = AbstractState()
         
@@ -213,7 +217,8 @@ class LoopEvaluator:
             summary.exit_records = exit_records
                 
         summary.iterations = loop_block.iterations
-        return summary
+        loop_block._cached_summary = summary
+        return copy.copy(summary)
 
     def _run_pass(self, body, state: AbstractState) -> AbstractState:
         # Deepcopy the state to isolate iterations
@@ -307,35 +312,16 @@ class LoopEvaluator:
                 return f"MEM_{addr}_{size}"
             return None
 
-        _REG_TO_BASE = {
-            'eax': 'rax', 'ax': 'rax', 'al': 'rax', 'ah': 'rax', 'rax': 'rax',
-            'ebx': 'rbx', 'bx': 'rbx', 'bl': 'rbx', 'bh': 'rbx', 'rbx': 'rbx',
-            'ecx': 'rcx', 'cx': 'rcx', 'cl': 'rcx', 'ch': 'rcx', 'rcx': 'rcx',
-            'edx': 'rdx', 'dx': 'rdx', 'dl': 'rdx', 'dh': 'rdx', 'rdx': 'rdx',
-            'esi': 'rsi', 'si': 'rsi', 'sil': 'rsi', 'rsi': 'rsi',
-            'edi': 'rdi', 'di': 'rdi', 'dil': 'rdi', 'rdi': 'rdi',
-            'ebp': 'rbp', 'bp': 'rbp', 'bpl': 'rbp', 'rbp': 'rbp',
-            'esp': 'rsp', 'sp': 'rsp', 'spl': 'rsp', 'rsp': 'rsp',
-            'r8d': 'r8', 'r8w': 'r8', 'r8b': 'r8', 'r8': 'r8',
-            'r9d': 'r9', 'r9w': 'r9', 'r9b': 'r9', 'r9': 'r9',
-            'r10d': 'r10', 'r10w': 'r10', 'r10b': 'r10', 'r10': 'r10',
-            'r11d': 'r11', 'r11w': 'r11', 'r11b': 'r11', 'r11': 'r11',
-            'r12d': 'r12', 'r12w': 'r12', 'r12b': 'r12', 'r12': 'r12',
-            'r13d': 'r13', 'r13w': 'r13', 'r13b': 'r13', 'r13': 'r13',
-            'r14d': 'r14', 'r14w': 'r14', 'r14b': 'r14', 'r14': 'r14',
-            'r15d': 'r15', 'r15w': 'r15', 'r15b': 'r15', 'r15': 'r15',
-        }
-
         def get_dest_dset(dest_key):
             res = state.get_register(dest_key)
             if res: return res
-            base = _REG_TO_BASE.get(dest_key, dest_key)
+            base = REG_TO_BASE.get(dest_key, dest_key)
             return state.get_register(base)
 
         def set_dest_dset(dest_key, new_dset, size=4):
             state.set_register(dest_key, new_dset)
-            if dest_key in _REG_TO_BASE:
-                base = _REG_TO_BASE[dest_key]
+            if dest_key in REG_TO_BASE:
+                base = REG_TO_BASE[dest_key]
                 state.set_register(base, copy.deepcopy(new_dset))
 
         def get_src_dset(src_op):
@@ -349,7 +335,7 @@ class LoopEvaluator:
                 if src_key:
                     res = state.get_register(src_key)
                     if res: return res
-                    base = _REG_TO_BASE.get(src_key, src_key)
+                    base = REG_TO_BASE.get(src_key, src_key)
                     return state.get_register(base)
             return None
 

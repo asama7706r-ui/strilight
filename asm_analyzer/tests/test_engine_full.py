@@ -63,8 +63,9 @@ def main():
         print("[+] Concretizing initial zero time moments (_t0)...")
         for reg, val in core.initial_regs.items():
             print(f"  -> Pinned {reg}_t0 = {hex(val)}")
-            var_t0 = z3.BitVec(f"{reg}_t0", 64)
-            translator.solver.add(var_t0 == val)
+            val_ast = z3.BitVecVal(val, 64)
+            translator.reg_state[reg] = val_ast
+            translator.solver.add(z3.BitVec(f"{reg}_t0", 64) == val)
             
         key_var = z3.BitVec("key_input", 32)
         translator.target_vars.add(key_var)

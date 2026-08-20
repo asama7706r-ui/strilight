@@ -1,5 +1,15 @@
 from typing import List, Dict, Any, Optional
 from collections import deque
+from asm_analyzer.engine.x86_defs import (
+    REGISTER_SIZES,
+    REGISTER_HIERARCHY,
+    REG_TO_BASE,
+    BASE_TO_REGS,
+    JUMP_FLAGS,
+    SET_FLAGS,
+    MODIFIES_ALL_FLAGS,
+    MODIFIES_ZSO_ONLY
+)
 
 class TraceRecord:
     def __init__(self, tick: int, address: int, size: int, mnemonic: str, op_str: str, thread_id: int = 0):
@@ -180,30 +190,38 @@ class BackwardSliceTracker:
                 pointer_regs_used = []
                 
                 if tracked_mem and record.mem_write:
-                    pointer_regs_used = [r for r in record.regs_read if r in {'eax','ebx','ecx','edx','esi','edi','rax','rbx','rcx','rdx','rsi','rdi', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15'}]
-                    if not pointer_regs_used:
-                        # Absolute Must-Alias (No registers used as pointers)
-                        write_size = self.ctx._calculate_memory_access_size(record)
-                        base_addr = record.mem_write[0]
-                        affected_addresses = range(base_addr, base_addr + write_size)
-                        
-                        for target in tracked_mem:
-                            if target in affected_addresses:
-                                writes_to_target_mem = True
-                                print(f"  -> [Must-Alias] Absolute write to [0x{target:x}] at Tick {record.tick} (Size: {write_size} bytes)")
-                                break
-                    else:
-                        # Symbolic Pointer Write (May-Alias for ALL tracked memory)
-                        may_alias_triggered = True
-                        for ptr in pointer_regs_used:
-                            new_desc = Descendant(target=ptr, at_tick=record.tick)
-                            worklist.append(new_desc)
-                            print(f"  -> [May-Alias] Tracking pointer '{ptr}' at Tick {record.tick} for potential aliasing with {len(tracked_mem)} addresses")
+                    write_size = self.ctx._calculate_memory_access_size(record)
+                    base_addr = record.mem_write[0]
+                    affected_addresses = range(base_addr, base_addr + write_size)
+                    
+                    # Direct Must-Alias Check: Does this instruction's concrete write touch any tracked target?
+                    for target in tracked_mem:
+                        if target in affected_addresses:
+                            writes_to_target_mem = True
+                            print(f"  -> [Must-Alias] Absolute write to [0x{target:x}] at Tick {record.tick} (Size: {write_size} bytes)")
+                            break
                             
-                            # Pruning Constraints: Launch Forward Tracker to gather path constraints on this pointer
-                            print(f"  -> [Bidirectional Slicing] Launching Forward Tracker on '{ptr}' to prune Z3 constraints up to Tick {global_end_tick}...")
-                            forward_slice = self.ctx.build_forward_slice(target=ptr, start_tick=record.tick, end_tick=global_end_tick, disable_fallback=True)
-                            slice_instructions.extend(forward_slice)
+                    # If not a direct Must-Alias write, check if this is a dynamic/symbolic pointer write (May-Alias)
+                    if not writes_to_target_mem:
+                        mem_ops = [op for op in record.operands if op.get('type') == 'mem']
+                        is_stack_relative = any(op.get('base') in ('rbp', 'rsp', 'ebp', 'esp') and not op.get('index') for op in mem_ops)
+                        
+                        if not is_stack_relative and mem_ops:
+                            for op in mem_ops:
+                                for ptr_cand in (op.get('base'), op.get('index')):
+                                    if ptr_cand and ptr_cand in {'eax','ebx','ecx','edx','esi','edi','rax','rbx','rcx','rdx','rsi','rdi','r8','r9','r10','r11','r12','r13','r14','r15'}:
+                                        if ptr_cand not in pointer_regs_used:
+                                            pointer_regs_used.append(ptr_cand)
+                                            
+                            if pointer_regs_used:
+                                may_alias_triggered = True
+                                for ptr in pointer_regs_used:
+                                    new_desc = Descendant(target=ptr, at_tick=record.tick)
+                                    worklist.append(new_desc)
+                                    print(f"  -> [May-Alias] Tracking pointer '{ptr}' at Tick {record.tick} for potential aliasing with {len(tracked_mem)} addresses")
+                                    
+                                    forward_slice = self.ctx.build_forward_slice(target=ptr, start_tick=record.tick, end_tick=global_end_tick, disable_fallback=True)
+                                    slice_instructions.extend(forward_slice)
                 
                 writes_to_tracked_flag = False
                 flags_to_kill = []
@@ -598,72 +616,15 @@ class ForwardSliceTracker:
 
 
 class Tracker:
-    MODIFIES_ALL_FLAGS = {"add", "sub", "cmp", "test", "and", "or", "xor", "shl", "shr", "cmpxchg", "lock cmpxchg"}
-    MODIFIES_ZSO_ONLY = {"inc", "dec"}
-    SET_FLAGS = {
-        "sete": ["flag_zf"], "setz": ["flag_zf"],
-        "setne": ["flag_zf"], "setnz": ["flag_zf"],
-        "seta": ["flag_cf", "flag_zf"], "setnbe": ["flag_cf", "flag_zf"],
-        "setae": ["flag_cf"], "setnb": ["flag_cf"], "setnc": ["flag_cf"],
-        "setb": ["flag_cf"], "setnae": ["flag_cf"], "setc": ["flag_cf"],
-        "setbe": ["flag_cf", "flag_zf"], "setna": ["flag_cf", "flag_zf"],
-        "setg": ["flag_zf", "flag_sf", "flag_of"], "setnle": ["flag_zf", "flag_sf", "flag_of"],
-        "setge": ["flag_sf", "flag_of"], "setnl": ["flag_sf", "flag_of"],
-        "setl": ["flag_sf", "flag_of"], "setnge": ["flag_sf", "flag_of"],
-        "setle": ["flag_zf", "flag_sf", "flag_of"], "setng": ["flag_zf", "flag_sf", "flag_of"],
-        "sets": ["flag_sf"], "setns": ["flag_sf"],
-        "seto": ["flag_of"], "setno": ["flag_of"]
-    }
-    JUMP_FLAGS = {
-        "je": ["flag_zf"], "jz": ["flag_zf"],
-        "jne": ["flag_zf"], "jnz": ["flag_zf"],
-        "ja": ["flag_cf", "flag_zf"], "jnbe": ["flag_cf", "flag_zf"],
-        "jae": ["flag_cf"], "jnb": ["flag_cf"],
-        "jb": ["flag_cf"], "jnae": ["flag_cf"], "jc": ["flag_cf"],
-        "jbe": ["flag_cf", "flag_zf"], "jna": ["flag_cf", "flag_zf"],
-        "jg": ["flag_zf", "flag_sf", "flag_of"], "jnle": ["flag_zf", "flag_sf", "flag_of"],
-        "jge": ["flag_sf", "flag_of"], "jnl": ["flag_sf", "flag_of"],
-        "jl": ["flag_sf", "flag_of"], "jnge": ["flag_sf", "flag_of"],
-        "jle": ["flag_zf", "flag_sf", "flag_of"], "jng": ["flag_zf", "flag_sf", "flag_of"],
-        "js": ["flag_sf"], "jns": ["flag_sf"],
-        "jo": ["flag_of"], "jno": ["flag_of"]
-    }
+    MODIFIES_ALL_FLAGS = MODIFIES_ALL_FLAGS
+    MODIFIES_ZSO_ONLY = MODIFIES_ZSO_ONLY
+    SET_FLAGS = SET_FLAGS
+    JUMP_FLAGS = JUMP_FLAGS
 
-    REGISTER_SIZES = {
-        "rax": 8, "rbx": 8, "rcx": 8, "rdx": 8, "rsi": 8, "rdi": 8, "rbp": 8, "rsp": 8,
-        "r8": 8, "r9": 8, "r10": 8, "r11": 8, "r12": 8, "r13": 8, "r14": 8, "r15": 8,
-        "eax": 4, "ebx": 4, "ecx": 4, "edx": 4, "esi": 4, "edi": 4, "ebp": 4, "esp": 4,
-        "r8d": 4, "r9d": 4, "r10d": 4, "r11d": 4, "r12d": 4, "r13d": 4, "r14d": 4, "r15d": 4,
-        "ax": 2, "bx": 2, "cx": 2, "dx": 2, "si": 2, "di": 2, "bp": 2, "sp": 2,
-        "r8w": 2, "r9w": 2, "r10w": 2, "r11w": 2, "r12w": 2, "r13w": 2, "r14w": 2, "r15w": 2,
-        "al": 1, "ah": 1, "bl": 1, "bh": 1, "cl": 1, "ch": 1, "dl": 1, "dh": 1,
-        "sil": 1, "dil": 1, "bpl": 1, "spl": 1,
-        "r8b": 1, "r9b": 1, "r10b": 1, "r11b": 1, "r12b": 1, "r13b": 1, "r14b": 1, "r15b": 1,
-    }
-
-    REGISTER_HIERARCHY = {
-        "rax": {"rax", "eax", "ax", "al", "ah"},
-        "rbx": {"rbx", "ebx", "bx", "bl", "bh"},
-        "rcx": {"rcx", "ecx", "cx", "cl", "ch"},
-        "rdx": {"rdx", "edx", "dx", "dl", "dh"},
-        "rsi": {"rsi", "esi", "si", "sil"},
-        "rdi": {"rdi", "edi", "di", "dil"},
-        "rbp": {"rbp", "ebp", "bp", "bpl"},
-        "rsp": {"rsp", "esp", "sp", "spl"},
-        "r8": {"r8", "r8d", "r8w", "r8b"},
-        "r9": {"r9", "r9d", "r9w", "r9b"},
-        "r10": {"r10", "r10d", "r10w", "r10b"},
-        "r11": {"r11", "r11d", "r11w", "r11b"},
-        "r12": {"r12", "r12d", "r12w", "r12b"},
-        "r13": {"r13", "r13d", "r13w", "r13b"},
-        "r14": {"r14", "r14d", "r14w", "r14b"},
-        "r15": {"r15", "r15d", "r15w", "r15b"},
-    }
-
-    REG_TO_BASE = {}
-    for base, subs in REGISTER_HIERARCHY.items():
-        for sub in subs:
-            REG_TO_BASE[sub] = base
+    REGISTER_SIZES = REGISTER_SIZES
+    REGISTER_HIERARCHY = REGISTER_HIERARCHY
+    REG_TO_BASE = REG_TO_BASE
+    BASE_TO_REGS = BASE_TO_REGS
 
     def _calculate_memory_access_size(self, record: TraceRecord) -> int:
         for op in record.operands:
