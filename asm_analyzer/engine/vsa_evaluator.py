@@ -450,13 +450,45 @@ class LoopEvaluator:
                     new_dset.add(Interval(s, s, bit_width=dst_bits))
                 set_dest_dset(dest, new_dset, dst_size=dst_bits // 8)
 
+        def _eval_sign_extend_acc(src_name, dst_name, src_bits, dst_bits):
+            src_dset = state.get_register(src_name) or state.get_register(REG_TO_BASE.get(src_name, src_name))
+            if src_dset:
+                sign_mask = 1 << (src_bits - 1)
+                val_mask = (1 << src_bits) - 1
+                dst_mask = (1 << dst_bits) - 1
+                new_dset = DisjointIntervalSet(k_limit=8)
+                for iv in src_dset.intervals:
+                    v = iv.min_val & val_mask
+                    s = (v - (1 << src_bits)) if v >= sign_mask else v
+                    s &= dst_mask
+                    new_dset.add(Interval(s, s, bit_width=dst_bits))
+                set_dest_dset(dst_name, new_dset, dst_size=dst_bits // 8)
+
+        def _eval_sign_extend_hi(src_name, hi_name, src_bits):
+            src_dset = state.get_register(src_name) or state.get_register(REG_TO_BASE.get(src_name, src_name))
+            if src_dset:
+                sign_mask = 1 << (src_bits - 1)
+                val_mask = (1 << src_bits) - 1
+                new_dset = DisjointIntervalSet(k_limit=8)
+                for iv in src_dset.intervals:
+                    v = iv.min_val & val_mask
+                    hi = val_mask if v >= sign_mask else 0
+                    new_dset.add(Interval(hi, hi, bit_width=src_bits))
+                set_dest_dset(hi_name, new_dset, dst_size=src_bits // 8)
+
         # Categorized Handler Dispatch Table
         handlers = {
-            # Data Movement
+            # Data Movement & Extension
             'mov': _eval_mov,
             'movzx': _eval_movzx,
             'movsxd': _eval_movsx,
             'movsx': _eval_movsx,
+            'cbw': lambda: _eval_sign_extend_acc('al', 'ax', 8, 16),
+            'cwde': lambda: _eval_sign_extend_acc('ax', 'eax', 16, 32),
+            'cdqe': lambda: _eval_sign_extend_acc('eax', 'rax', 32, 64),
+            'cwd': lambda: _eval_sign_extend_hi('ax', 'dx', 16),
+            'cdq': lambda: _eval_sign_extend_hi('eax', 'edx', 32),
+            'cqo': lambda: _eval_sign_extend_hi('rax', 'rdx', 64),
 
             # Arithmetic & Bitwise Logic
             'add': lambda: _eval_binary_op(lambda d, s: d.add(s)),

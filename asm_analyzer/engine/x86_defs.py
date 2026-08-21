@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Set
 
 INSTRUCTION_META: Dict[str, Dict[str, Any]] = {
-    # Data Transfer
+    # Data Transfer & Extension
     'mov': {'type': 'data_transfer'},
     'movzx': {'type': 'data_transfer'},
     'movsx': {'type': 'data_transfer'},
@@ -9,7 +9,12 @@ INSTRUCTION_META: Dict[str, Dict[str, Any]] = {
     'lea': {'type': 'data_transfer'},
     'xchg': {'type': 'data_transfer'},
     'lock xchg': {'type': 'data_transfer'},
+    'cbw': {'type': 'data_transfer'},
+    'cwde': {'type': 'data_transfer'},
     'cdqe': {'type': 'data_transfer'},
+    'cwd': {'type': 'data_transfer'},
+    'cdq': {'type': 'data_transfer'},
+    'cqo': {'type': 'data_transfer'},
     'push': {'type': 'stack'},
     'pop': {'type': 'stack'},
     

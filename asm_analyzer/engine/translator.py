@@ -22,13 +22,18 @@ class Z3Translator:
         self._taint_cache = {}
         self._reg_to_base = REG_TO_BASE
         self.handlers = {
-            # Data Movement
+            # Data Movement & Extension
             'mov': self._handle_mov,
             'movzx': self._handle_mov,
             'movsx': self._handle_mov,
             'movsxd': self._handle_mov,
             'lea': self._handle_lea,
+            'cbw': self._handle_cbw,
+            'cwde': self._handle_cwde,
             'cdqe': self._handle_cdqe,
+            'cwd': self._handle_cwd,
+            'cdq': self._handle_cdq,
+            'cqo': self._handle_cqo,
 
             # Arithmetic & Logic
             'add': self._handle_math,
@@ -698,11 +703,38 @@ class Z3Translator:
                 rsp_new = rsp_val + dst_size // 8
             self._write_operand({'type': 'reg', 'value': 'rsp', 'size': 8}, rsp_new)
 
+    def _handle_cbw(self, instr):
+        al_val, _ = self._read_operand({'type': 'reg', 'value': 'al', 'size': 1})
+        ax_val = z3.SignExt(8, al_val)
+        self._write_operand({'type': 'reg', 'value': 'ax', 'size': 2}, ax_val)
+
+    def _handle_cwde(self, instr):
+        ax_val, _ = self._read_operand({'type': 'reg', 'value': 'ax', 'size': 2})
+        eax_val = z3.SignExt(16, ax_val)
+        self._write_operand({'type': 'reg', 'value': 'eax', 'size': 4}, eax_val)
+
     def _handle_cdqe(self, instr):
-        ops = instr.operands
         eax_val, _ = self._read_operand({'type': 'reg', 'value': 'eax', 'size': 4})
         rax_val = z3.SignExt(32, eax_val)
         self._write_operand({'type': 'reg', 'value': 'rax', 'size': 8}, rax_val)
+
+    def _handle_cwd(self, instr):
+        ax_val, _ = self._read_operand({'type': 'reg', 'value': 'ax', 'size': 2})
+        ext = z3.SignExt(16, ax_val)
+        dx_val = z3.Extract(31, 16, ext)
+        self._write_operand({'type': 'reg', 'value': 'dx', 'size': 2}, dx_val)
+
+    def _handle_cdq(self, instr):
+        eax_val, _ = self._read_operand({'type': 'reg', 'value': 'eax', 'size': 4})
+        ext = z3.SignExt(32, eax_val)
+        edx_val = z3.Extract(63, 32, ext)
+        self._write_operand({'type': 'reg', 'value': 'edx', 'size': 4}, edx_val)
+
+    def _handle_cqo(self, instr):
+        rax_val, _ = self._read_operand({'type': 'reg', 'value': 'rax', 'size': 8})
+        ext = z3.SignExt(64, rax_val)
+        rdx_val = z3.Extract(127, 64, ext)
+        self._write_operand({'type': 'reg', 'value': 'rdx', 'size': 8}, rdx_val)
 
     def _handle_setcc(self, instr):
         ops = instr.operands
