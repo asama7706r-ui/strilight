@@ -417,27 +417,46 @@ class LoopEvaluator:
             if src_dset:
                 set_dest_dset(dest, copy.deepcopy(src_dset), size)
 
-        def _eval_movsxd():
+        def _eval_movzx():
             if len(operands) < 2: return
             dest = get_op_key(operands[0], is_dest=True)
             if not dest: return
             src_dset = get_src_dset(operands[1])
             if src_dset:
+                src_size = operands[1].get('size', size)
+                val_mask = (1 << (src_size * 8)) - 1
                 new_dset = DisjointIntervalSet(k_limit=8)
                 for iv in src_dset.intervals:
-                    v32 = iv.min_val & 0xFFFFFFFF
-                    s64 = (v32 - 0x100000000) if v32 >= 0x80000000 else v32
-                    s64 &= 0xFFFFFFFFFFFFFFFF
-                    new_dset.add(Interval(s64, s64, bit_width=64))
-                set_dest_dset(dest, new_dset, dst_size=8)
+                    new_dset.add(Interval(iv.min_val & val_mask, iv.max_val & val_mask, bit_width=size * 8))
+                set_dest_dset(dest, new_dset, size)
+
+        def _eval_movsx():
+            if len(operands) < 2: return
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            src_dset = get_src_dset(operands[1])
+            if src_dset:
+                src_size = operands[1].get('size', 4)
+                src_bits = src_size * 8
+                sign_mask = 1 << (src_bits - 1)
+                val_mask = (1 << src_bits) - 1
+                dst_bits = size * 8 if size >= src_size else 64
+                dst_mask = (1 << dst_bits) - 1
+                new_dset = DisjointIntervalSet(k_limit=8)
+                for iv in src_dset.intervals:
+                    v = iv.min_val & val_mask
+                    s = (v - (1 << src_bits)) if v >= sign_mask else v
+                    s &= dst_mask
+                    new_dset.add(Interval(s, s, bit_width=dst_bits))
+                set_dest_dset(dest, new_dset, dst_size=dst_bits // 8)
 
         # Categorized Handler Dispatch Table
         handlers = {
             # Data Movement
             'mov': _eval_mov,
-            'movzx': _eval_mov,
-            'movsxd': _eval_movsxd,
-            'movsx': _eval_movsxd,
+            'movzx': _eval_movzx,
+            'movsxd': _eval_movsx,
+            'movsx': _eval_movsx,
 
             # Arithmetic & Bitwise Logic
             'add': lambda: _eval_binary_op(lambda d, s: d.add(s)),
