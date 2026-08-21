@@ -379,6 +379,20 @@ class LoopEvaluator:
                     new_dset.add(r)
             set_dest_dset(dest, new_dset, size)
 
+        def _eval_neg_op():
+            if len(operands) < 1: return
+            dest = get_op_key(operands[0], is_dest=True)
+            if not dest: return
+            dest_dset = get_dest_dset(dest)
+            if not dest_dset: return
+            zero_int = Interval(0, 0)
+            new_dset = DisjointIntervalSet(k_limit=8)
+            for d_int in dest_dset.intervals:
+                res = zero_int.sub(d_int)
+                for r in res.intervals:
+                    new_dset.add(r)
+            set_dest_dset(dest, new_dset, size)
+
         # Generic Helper for Bit Shifts
         def _eval_shift_op(shift_type: str):
             if len(operands) < 2: return
@@ -493,6 +507,7 @@ class LoopEvaluator:
             # Arithmetic & Bitwise Logic
             'add': lambda: _eval_binary_op(lambda d, s: d.add(s)),
             'sub': lambda: _eval_binary_op(lambda d, s: d.sub(s)),
+            'neg': _eval_neg_op,
             'xor': lambda: _eval_binary_op(lambda d, s: d.bitwise_xor(s)),
             'and': lambda: _eval_binary_op(lambda d, s: d.bitwise_and(s)),
             'or':  lambda: _eval_binary_op(lambda d, s: d.bitwise_or(s)),

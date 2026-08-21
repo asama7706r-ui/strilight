@@ -38,6 +38,7 @@ class Z3Translator:
             # Arithmetic & Logic
             'add': self._handle_math,
             'sub': self._handle_math,
+            'neg': self._handle_neg,
             'xor': self._handle_math,
             'and': self._handle_math,
             'or': self._handle_math,
@@ -536,6 +537,16 @@ class Z3Translator:
             if instr.mnemonic not in ['cmp', 'test']:
                 self._write_operand(dst, res)
             self.generate_flags(instr, instr.mnemonic, dst_val, src_val, res, dst_size)
+
+    def _handle_neg(self, instr):
+        ops = instr.operands
+        if len(ops) == 1:
+            dst = ops[0]
+            dst_val, dst_size = self._read_operand(dst)
+            res = -dst_val
+            self._write_operand(dst, res)
+            zero_val = z3.BitVecVal(0, dst_size)
+            self.generate_flags(instr, 'sub', zero_val, dst_val, res, dst_size)
 
     def _handle_inc_dec(self, instr):
         ops = instr.operands

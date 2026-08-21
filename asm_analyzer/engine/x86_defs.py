@@ -25,6 +25,7 @@ INSTRUCTION_META: Dict[str, Dict[str, Any]] = {
     # Arithmetic and Logic
     'add': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
     'sub': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
+    'neg': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
     'xor': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
     'and': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
     'or': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
