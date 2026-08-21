@@ -679,3 +679,60 @@ def test_calculate_memory_access_size_fallback():
     
     # Backward memory tracking requires size calculation
     tracker.build_backward_slice(Descendant(0x1000, 2))
+
+def test_bitmask_partial_subregister_write_preserves_upper_bits():
+    """Verify that writing to 'al' (8-bit) does NOT kill upper bits of 'rax'."""
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 0x1122334455667788", size=10)
+    r1.regs_write = ["rax"]
+    r1.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 0x1122334455667788, 'size': 8}]
+
+    r2 = TraceRecord(tick=2, address=0x100A, mnemonic="mov", op_str="al, 0x55", size=2)
+    r2.regs_write = ["al"]
+    r2.operands = [{'type': 'reg', 'value': 'al', 'size': 1}, {'type': 'imm', 'value': 0x55, 'size': 1}]
+
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+
+    slice_records = tracker.build_backward_slice(Descendant("rax", 3))
+    ticks = [r.tick for r in slice_records]
+    assert 2 in ticks
+    assert 1 in ticks  # Tick 1 must remain because upper 56 bits were not killed by mov al!
+
+def test_bitmask_full_clobber_32bit_write_kills_base_register():
+    """Verify that writing to 'eax' (32-bit) full-clobbers all 64 bits of 'rax'."""
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 0x1122334455667788", size=10)
+    r1.regs_write = ["rax"]
+    r1.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 0x1122334455667788, 'size': 8}]
+
+    r2 = TraceRecord(tick=2, address=0x100A, mnemonic="mov", op_str="eax, 0x55", size=5)
+    r2.regs_write = ["eax", "rax"]
+    r2.operands = [{'type': 'reg', 'value': 'eax', 'size': 4}, {'type': 'imm', 'value': 0x55, 'size': 4}]
+
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+
+    slice_records = tracker.build_backward_slice(Descendant("rax", 3))
+    ticks = [r.tick for r in slice_records]
+    assert 2 in ticks
+    assert 1 not in ticks  # Tick 1 is killed because 32-bit eax zero-extends and overwrites full rax!
+
+def test_bitmask_subregister_only_target_ignores_unrelated_upper_writes():
+    """Verify that tracking 'al' only cares about 'al' and stops once 'al' is killed."""
+    tracker = Tracker()
+    r1 = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 0x1122334455667788", size=10)
+    r1.regs_write = ["rax"]
+    r1.operands = [{'type': 'reg', 'value': 'rax', 'size': 8}, {'type': 'imm', 'value': 0x1122334455667788, 'size': 8}]
+
+    r2 = TraceRecord(tick=2, address=0x100A, mnemonic="mov", op_str="al, 0x55", size=2)
+    r2.regs_write = ["al"]
+    r2.operands = [{'type': 'reg', 'value': 'al', 'size': 1}, {'type': 'imm', 'value': 0x55, 'size': 1}]
+
+    tracker.add_trace(r1)
+    tracker.add_trace(r2)
+
+    slice_records = tracker.build_backward_slice(Descendant("al", 3))
+    ticks = [r.tick for r in slice_records]
+    assert 2 in ticks
+    assert 1 not in ticks  # Tick 1 is not needed because only 'al' was requested!

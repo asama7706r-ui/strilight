@@ -165,6 +165,39 @@ REGISTER_SIZES: Dict[str, int] = {
     "r8b": 1, "r9b": 1, "r10b": 1, "r11b": 1, "r12b": 1, "r13b": 1, "r14b": 1, "r15b": 1,
 }
 
+REGISTER_MASKS: Dict[str, int] = {
+    # 64-bit
+    "rax": 0xFFFFFFFFFFFFFFFF, "rbx": 0xFFFFFFFFFFFFFFFF, "rcx": 0xFFFFFFFFFFFFFFFF, "rdx": 0xFFFFFFFFFFFFFFFF,
+    "rsi": 0xFFFFFFFFFFFFFFFF, "rdi": 0xFFFFFFFFFFFFFFFF, "rbp": 0xFFFFFFFFFFFFFFFF, "rsp": 0xFFFFFFFFFFFFFFFF,
+    "r8": 0xFFFFFFFFFFFFFFFF, "r9": 0xFFFFFFFFFFFFFFFF, "r10": 0xFFFFFFFFFFFFFFFF, "r11": 0xFFFFFFFFFFFFFFFF,
+    "r12": 0xFFFFFFFFFFFFFFFF, "r13": 0xFFFFFFFFFFFFFFFF, "r14": 0xFFFFFFFFFFFFFFFF, "r15": 0xFFFFFFFFFFFFFFFF,
+    # 32-bit (Lower 32 bits)
+    "eax": 0xFFFFFFFF, "ebx": 0xFFFFFFFF, "ecx": 0xFFFFFFFF, "edx": 0xFFFFFFFF,
+    "esi": 0xFFFFFFFF, "edi": 0xFFFFFFFF, "ebp": 0xFFFFFFFF, "esp": 0xFFFFFFFF,
+    "r8d": 0xFFFFFFFF, "r9d": 0xFFFFFFFF, "r10d": 0xFFFFFFFF, "r11d": 0xFFFFFFFF,
+    "r12d": 0xFFFFFFFF, "r13d": 0xFFFFFFFF, "r14d": 0xFFFFFFFF, "r15d": 0xFFFFFFFF,
+    # 16-bit (Lower 16 bits)
+    "ax": 0xFFFF, "bx": 0xFFFF, "cx": 0xFFFF, "dx": 0xFFFF,
+    "si": 0xFFFF, "di": 0xFFFF, "bp": 0xFFFF, "sp": 0xFFFF,
+    "r8w": 0xFFFF, "r9w": 0xFFFF, "r10w": 0xFFFF, "r11w": 0xFFFF,
+    "r12w": 0xFFFF, "r13w": 0xFFFF, "r14w": 0xFFFF, "r15w": 0xFFFF,
+    # 8-bit low (Lower 8 bits)
+    "al": 0xFF, "bl": 0xFF, "cl": 0xFF, "dl": 0xFF,
+    "sil": 0xFF, "dil": 0xFF, "bpl": 0xFF, "spl": 0xFF,
+    "r8b": 0xFF, "r9b": 0xFF, "r10b": 0xFF, "r11b": 0xFF,
+    "r12b": 0xFF, "r13b": 0xFF, "r14b": 0xFF, "r15b": 0xFF,
+    # 8-bit high (Bits 8..15)
+    "ah": 0xFF00, "bh": 0xFF00, "ch": 0xFF00, "dh": 0xFF00,
+}
+
+def get_register_mask(reg: str) -> int:
+    """Returns the 64-bit bitmask for any register or subregister (e.g. 'al' -> 0xFF, 'ah' -> 0xFF00)."""
+    return REGISTER_MASKS.get(reg.lower(), 0xFFFFFFFFFFFFFFFF)
+
+def is_full_register_clobber(reg: str) -> bool:
+    """In x86-64, writes to >= 32-bit registers (e.g. 'eax', 'rax') clobber the full 64-bit base register."""
+    return REGISTER_SIZES.get(reg.lower(), 8) >= 4
+
 def get_base_register(reg: str) -> str:
     """Returns 64-bit base register name for any subregister (e.g. 'eax' -> 'rax')"""
     return REG_TO_BASE.get(reg, reg)
