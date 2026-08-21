@@ -2,7 +2,7 @@ import sys
 import os
 import z3
 import pytest
-import re
+import subprocess
 
 app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, os.path.join(app_dir, 'speakeasy'))
@@ -18,11 +18,11 @@ TEST_CASES = [
         "name": "crackme_boss",
         "exe": "crackme_boss.exe",
         "start_input": "1789",
-        "target_cmp_pattern": "0xde1770ef", # We found 0xde1770ef matching 1729
-        "goal_value": 0xDE1770EF,
+        "target_cmp_pattern": "0xde42daef",
+        "goal_value": 0xDE42DAEF,
         "key_bounds": (1000, 2000),
-        "target_reg_str": "eax",
-        "expected_key": 1957, # from crackme_boss.c 1957 passes
+        "expected_key": 1729,
+        "compress": True,
     },
     {
         "name": "crackme_subregs",
@@ -31,7 +31,6 @@ TEST_CASES = [
         "target_cmp_pattern": "0x55334439",
         "goal_value": 0x55334439,
         "key_bounds": (1000, 9999),
-        "target_reg_str": "eax",
         "expected_key": 1337,
     },
     {
@@ -41,7 +40,6 @@ TEST_CASES = [
         "target_cmp_pattern": "0x5af5880",
         "goal_value": 0x5af5880,
         "key_bounds": (1000, 9999),
-        "target_reg_str": "dword ptr [rbp - 4]",
         "expected_key": 1337,
     },
     {
@@ -51,7 +49,6 @@ TEST_CASES = [
         "target_cmp_pattern": "0x2cd7",
         "goal_value": 0x2cd7,
         "key_bounds": (1000, 9999),
-        "target_reg_str": "dword ptr [rbp - 0x14]",
         "expected_key": 1337,
     },
     {
@@ -61,7 +58,6 @@ TEST_CASES = [
         "target_cmp_pattern": "-0x539",
         "goal_value": -0x539,
         "key_bounds": (1000, 9999),
-        "target_reg_str": "qword ptr [rbp - 0x38]",
         "expected_key": 1337,
     }
 ]
@@ -69,16 +65,26 @@ TEST_CASES = [
 @pytest.mark.skip(reason="End-to-end integration test suite. Run directly with python test_engine_full.py")
 @pytest.mark.parametrize("test_case", TEST_CASES)
 def test_crackme_solvers(test_case):
-    run_crackme_case(test_case)
+    res = run_crackme_case(test_case)
+    assert res["sat"], f"Z3 failed to solve {test_case['name']}"
+    assert res["native_pass"], f"Native binary rejected key {res['key']} for {test_case['name']}"
 
 def run_crackme_case(test_case):
     target_exe = test_case["exe"]
-    
     crackme_dir = os.path.join(app_dir, "asm_analyzer", "tests", "CrackMeFile")
     target_path = os.path.join(crackme_dir, target_exe)
-    print(f"Path: {target_path} Exists: {os.path.exists(target_path)}")
     
-    print(f"[*] Initializing AnalyzerCore with Speakeasy backend for {target_exe}...")
+    result = {
+        "name": test_case["name"],
+        "exe": target_exe,
+        "slice_len": 0,
+        "sat": False,
+        "key": None,
+        "native_pass": False,
+        "native_output": ""
+    }
+    
+    print(f"\n[*] Initializing AnalyzerCore with Speakeasy backend for {target_exe}...")
     core = AnalyzerCore(target_path=[str(target_path), str(test_case["start_input"])])
     
     print("[*] Setting up hooks...")
@@ -100,9 +106,10 @@ def run_crackme_case(test_case):
                 
     assert target_tick != -1, f"[-] Target not found for {target_exe}!"
 
-    # Compress loops before building the slice
-    print("\n[*] Compressing trace history...")
-    core.tracker.compress_trace()
+    # Compress loops if requested by test case
+    if test_case.get("compress", False):
+        print("\n[*] Compressing trace history...")
+        core.tracker.compress_trace()
 
     print(f"[SUCCESS] Target CMP instruction found at Tick {target_tick}!")
     
@@ -114,53 +121,64 @@ def run_crackme_case(test_case):
         elif op0.get('type') == 'mem' and target_record.mem_read:
             desc = Descendant(target=target_record.mem_read[0], at_tick=target_tick, is_memory=True)
         else:
-            desc = Descendant(target=test_case.get("target_reg_str", "eax"), at_tick=target_tick)
+            desc = Descendant(target="eax", at_tick=target_tick)
     else:
-        desc = Descendant(target=test_case.get("target_reg_str", "eax"), at_tick=target_tick)
+        desc = Descendant(target="eax", at_tick=target_tick)
 
     slice_records = core.tracker.build_backward_slice(desc)
+    result["slice_len"] = len(slice_records)
     
     print("\n[+] ===========================================")
     print(f"[+] Final Slice Extracted ({len(slice_records)} instructions)")
     
-    symbolic_slice = slice_records
-    chronological_slice = list(reversed(symbolic_slice))
+    chronological_slice = list(reversed(slice_records))
     
     translator = Z3Translator(memory_provider=core.se.mem_read)
     
     print("[+] Concretizing initial zero time moments (_t0)...")
     for reg, val in core.initial_regs.items():
-        print(f"  -> Pinned {reg}_t0 = {hex(val)}")
         val_ast = z3.BitVecVal(val, 64)
         translator.reg_state[reg] = val_ast
         translator.solver.add(z3.BitVec(f"{reg}_t0", 64) == val)
         
     key_var = z3.BitVec("key_input", 32)
     translator.target_vars.add(key_var)
-    translator.add_tracked_constraint(key_var >= test_case["key_bounds"][0], f"Key Lower Bound")
-    translator.add_tracked_constraint(key_var < test_case["key_bounds"][1], f"Key Upper Bound")
+    translator.add_tracked_constraint(key_var >= test_case["key_bounds"][0], "Key Lower Bound")
+    translator.add_tracked_constraint(key_var < test_case["key_bounds"][1], "Key Upper Bound")
     
-    # Clear previous assumptions
-    check_key_start_tick = 0
-    
-    for record in chronological_slice:
-        if hasattr(record, 'mnemonic') and record.mnemonic == 'push' and 'rbp' in record.op_str:
-            check_key_start_tick = record.tick
+    # 1. Look for explicit input boundary tagged by STOP_FUNCTIONS / hooks.py
+    input_boundary_tick = None
+    for r in core.tracker.trace_history:
+        if getattr(r, 'is_input_boundary', False):
+            input_boundary_tick = r.tick
+            print(f"[+] Found Input Boundary API ({getattr(r, 'api_name', 'unknown')}) at Tick {r.tick}")
+            break
 
-    # Take a copy of the tracker data (backward slice)
-    tracker_data = {r.tick: r for r in chronological_slice if hasattr(r, 'tick')}
+    # 2. Find the verification function prologue immediately following the input boundary
+    check_key_start_tick = None
+    if input_boundary_tick is not None:
+        for r in chronological_slice:
+            if hasattr(r, 'tick') and r.tick > input_boundary_tick:
+                if hasattr(r, 'mnemonic') and r.mnemonic == 'push' and 'rbp' in r.op_str:
+                    check_key_start_tick = r.tick
+                    break
+
+    # 3. Fallback to first push rbp after CRT startup (> tick 700)
+    if check_key_start_tick is None:
+        for r in chronological_slice:
+            if hasattr(r, 'tick') and r.tick > 700:
+                if hasattr(r, 'mnemonic') and r.mnemonic == 'push' and 'rbp' in r.op_str:
+                    check_key_start_tick = r.tick
+                    break
 
     for record in chronological_slice:
-        # 1. Force the target instruction (cmp) to generate flags because the slicer ignored it
         if record.tick == target_tick:
             record.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
         
-        # 2. Clean the past (clear path constraints for random jumps)
         if hasattr(record, 'mnemonic') and record.mnemonic.startswith('j') and record.mnemonic != 'jmp':
-            if record.tick != target_tick + 1:
+            if record.tick < check_key_start_tick:
                 record.jump_taken = None 
 
-        # 3. Flip the target jump to force a win
         if record.tick == target_tick + 1:
             if record.jump_taken is not None:
                 record.jump_taken = not record.jump_taken
@@ -171,44 +189,84 @@ def run_crackme_case(test_case):
         else:
             translator.translate_loop_summary(record, max_iterations=getattr(record, 'iterations', 1000))
         
-        # 4. Inject the symbolic key
         if record.tick == check_key_start_tick:
             translator.reg_state["ecx"] = key_var
             translator.reg_state["rcx"] = z3.ZeroExt(32, key_var)
-            print(f"[+] Injected symbolic key into ecx at Tick {record.tick} (check_key prologue)")
+            print(f"[+] Injected symbolic key into ecx/rcx at Tick {record.tick} (check_key prologue)")
     
-    if target_record and target_record.operands and target_record.operands[0].get('type') == 'reg':
-        reg_name = target_record.operands[0]['value']
-        final_val = translator.reg_state.get(reg_name, None)
+    tgt = test_case["goal_value"]
+    if target_record and target_record.operands:
+        op0 = target_record.operands[0]
+        final_val, bit_size = translator._read_operand(op0)
         if final_val is not None:
-            tgt = test_case["goal_value"]
-            print(f"[+] Adding Goal Constraint: {reg_name} == {hex(tgt) if tgt >= 0 else tgt}")
-            translator.add_tracked_constraint(final_val == tgt, f"Goal Target: {reg_name} == {tgt}")
-    else:
-        print("[+] Goal constraint should be implicitly added by JCC.")
+            tgt_ast = z3.BitVecVal(tgt, bit_size)
+            print(f"[+] Adding Goal Constraint: {op0} == {hex(tgt) if tgt >= 0 else tgt}")
+            translator.add_tracked_constraint(final_val == tgt_ast, f"Goal Target: {tgt}")
 
     print("\n[*] Z3 Solving...")
     res = translator.solver.check()
-    assert res == z3.sat, f"[-] Z3 returned UNSAT for {target_exe}. No solution found!"
+    if res == z3.sat:
+        result["sat"] = True
+        model = translator.solver.model()
+        for d in model.decls():
+            if d.name() == "key_input":
+                recovered_key = model[d].as_long()
+                result["key"] = recovered_key
+                print(f"[SUCCESS] Discovered key_input = {recovered_key}")
+                break
+                
+        # Native Ground-Truth Validation
+        if result["key"] is not None:
+            try:
+                proc = subprocess.run([target_path, str(result["key"])], capture_output=True, text=True, timeout=5)
+                output = proc.stdout.strip()
+                result["native_output"] = output
+                if "ACCESS GRANTED" in output:
+                    result["native_pass"] = True
+                    print(f"[GROUND TRUTH] Native binary returned: '{output}' -> [VERIFIED]")
+                else:
+                    print(f"[GROUND TRUTH] Native binary returned: '{output}' -> [FAILED]")
+            except Exception as e:
+                result["native_output"] = str(e)
+                print(f"[-] Native execution error: {e}")
+    else:
+        print("[-] Z3 returned UNSAT!")
+
+    return result
+
+def print_summary_table(results):
+    print("\n" + "=" * 92)
+    print("                     [CRACKME SUITE BENCHMARK & VERIFICATION RESULTS]")
+    print("=" * 92)
+    print(f"{'#':<3} | {'Target Name':<22} | {'Slice':<7} | {'Z3 Status':<10} | {'Discovered Key':<15} | {'Native Test':<13} | {'Result':<8}")
+    print("-" * 92)
     
-    model = translator.solver.model()
-    print(f"\n[SUCCESS] Z3 SOLVED THE BOSS FIGHT for {target_exe}!")
-    
-    key_found = False
-    for d in model.decls():
-        if d.name() == "key_input":
-            print(f"[SUCCESS] Found key_input = {model[d]}")
-            # wait, crackme_boss doesn't expect exactly 1729, it could be multiple. Let's not strictly assert on exact key if there's multiple
-            key_found = True
-            break
-            
-    assert key_found, f"[-] Z3 did not resolve a value for key_input in {target_exe}!"
+    all_passed = True
+    for idx, r in enumerate(results, 1):
+        z3_status = "SAT" if r["sat"] else "UNSAT"
+        key_str = str(r["key"]) if r["key"] is not None else "N/A"
+        native_str = "GRANTED" if r["native_pass"] else ("DENIED" if r["key"] is not None else "N/A")
+        overall_pass = r["sat"] and r["native_pass"]
+        if not overall_pass:
+            all_passed = False
+        res_tag = "[PASS]" if overall_pass else "[FAIL]"
+        
+        print(f"{idx:<3} | {r['name']:<22} | {r['slice_len']:<7} | {z3_status:<10} | {key_str:<15} | {native_str:<13} | {res_tag:<8}")
+        
+    print("=" * 92)
+    if all_passed:
+        print("[+] ALL CRACKME TEST CASES FULLY SOLVED AND VERIFIED AGAINST NATIVE BINARIES!")
+    else:
+        print("[-] SOME TEST CASES FAILED VERIFICATION. CHECK DETAILS ABOVE.")
+    print("=" * 92 + "\n")
 
 if __name__ == '__main__':
-    print("[*] Running Full CrackMe Verification Suite...")
+    results = []
     for idx, tc in enumerate(TEST_CASES, 1):
-        print(f"\n=======================================================")
-        print(f"[{idx}/{len(TEST_CASES)}] Testing CrackMe: {tc['name']} ({tc['exe']})")
-        print(f"=======================================================")
-        run_crackme_case(tc)
-    print("\n[+] ALL 5 CRACKMES SUCCESSFULLY SOLVED BY Z3!")
+        print(f"\n{'=' * 60}")
+        print(f"[{idx}/{len(TEST_CASES)}] Processing CrackMe: {tc['name']} ({tc['exe']})")
+        print(f"{'=' * 60}")
+        res = run_crackme_case(tc)
+        results.append(res)
+        
+    print_summary_table(results)

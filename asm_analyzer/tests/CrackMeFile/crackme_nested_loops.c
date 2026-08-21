@@ -36,12 +36,13 @@ int get_input() {
 }
 
 int main(int argc, char **argv) {
-    int key = get_input();
+    int key = (argc > 1) ? atoi(argv[1]) : get_input();
     
     if (check_key(key)) {
         printf("ACCESS GRANTED\n");
+        return 0;
     } else {
         printf("ACCESS DENIED\n");
+        return 1;
     }
-    return 0;
 }

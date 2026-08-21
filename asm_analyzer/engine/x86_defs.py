@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Set
 INSTRUCTION_META: Dict[str, Dict[str, Any]] = {
     # Data Transfer & Extension
     'mov': {'type': 'data_transfer'},
+    'movabs': {'type': 'data_transfer'},
     'movzx': {'type': 'data_transfer'},
     'movsx': {'type': 'data_transfer'},
     'movsxd': {'type': 'data_transfer'},
@@ -38,6 +39,8 @@ INSTRUCTION_META: Dict[str, Dict[str, Any]] = {
     'sar': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
     'mul': {'type': 'math', 'flags_written': ['flag_cf', 'flag_of']},
     'imul': {'type': 'math', 'flags_written': ['flag_cf', 'flag_of']},
+    'div': {'type': 'math', 'flags_written': ['flag_cf', 'flag_of', 'flag_zf', 'flag_sf']},
+    'idiv': {'type': 'math', 'flags_written': ['flag_cf', 'flag_of', 'flag_zf', 'flag_sf']},
     'cmpxchg': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
     'lock cmpxchg': {'type': 'math', 'flags_written': ['flag_zf', 'flag_cf', 'flag_sf', 'flag_of']},
     

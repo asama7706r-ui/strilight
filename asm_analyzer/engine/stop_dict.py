@@ -10,6 +10,11 @@ STOP_FUNCTIONS = {
     "read": "input",
     "ReadFile": "input",
     "recv": "network_input",
+    "atoi": "input_conversion",
+    "atol": "input_conversion",
+    "strtol": "input_conversion",
+    "sscanf": "input_conversion",
+    "_atoi64": "input_conversion",
     
     # Writing and output functions (we don't need to track their internal details)
     "printf": "output",

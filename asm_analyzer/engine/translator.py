@@ -24,6 +24,7 @@ class Z3Translator:
         self.handlers = {
             # Data Movement & Extension
             'mov': self._handle_mov,
+            'movabs': self._handle_mov,
             'movzx': self._handle_mov,
             'movsx': self._handle_mov,
             'movsxd': self._handle_mov,
@@ -51,6 +52,8 @@ class Z3Translator:
             'sar': self._handle_shift,
             'mul': self._handle_mul,
             'imul': self._handle_mul,
+            'div': self._handle_div,
+            'idiv': self._handle_div,
 
             # Stack & Control Flow
             'push': self._handle_push,
@@ -517,6 +520,42 @@ class Z3Translator:
                     addr_ast = z3.Extract(dst_size - 1, 0, addr_ast)
                 self._write_operand(dst, addr_ast)
 
+    def _handle_cbw(self, instr):
+        al_val, _ = self._read_operand({'type': 'reg', 'value': 'al', 'size': 1})
+        al_8 = z3.Extract(7, 0, al_val) if al_val.size() > 8 else al_val
+        ax_val = z3.SignExt(8, al_8)
+        self._write_operand({'type': 'reg', 'value': 'ax', 'size': 2}, ax_val)
+
+    def _handle_cwde(self, instr):
+        ax_val, _ = self._read_operand({'type': 'reg', 'value': 'ax', 'size': 2})
+        ax_16 = z3.Extract(15, 0, ax_val) if ax_val.size() > 16 else ax_val
+        eax_val = z3.SignExt(16, ax_16)
+        self._write_operand({'type': 'reg', 'value': 'eax', 'size': 4}, eax_val)
+
+    def _handle_cdqe(self, instr):
+        eax_val, _ = self._read_operand({'type': 'reg', 'value': 'eax', 'size': 4})
+        eax_32 = z3.Extract(31, 0, eax_val) if eax_val.size() > 32 else eax_val
+        rax_val = z3.SignExt(32, eax_32)
+        self._write_operand({'type': 'reg', 'value': 'rax', 'size': 8}, rax_val)
+
+    def _handle_cwd(self, instr):
+        ax_val, _ = self._read_operand({'type': 'reg', 'value': 'ax', 'size': 2})
+        ax_16 = z3.Extract(15, 0, ax_val) if ax_val.size() > 16 else ax_val
+        dx_val = z3.If(z3.Extract(15, 15, ax_16) == 1, z3.BitVecVal(0xFFFF, 16), z3.BitVecVal(0, 16))
+        self._write_operand({'type': 'reg', 'value': 'dx', 'size': 2}, dx_val)
+
+    def _handle_cdq(self, instr):
+        eax_val, _ = self._read_operand({'type': 'reg', 'value': 'eax', 'size': 4})
+        eax_32 = z3.Extract(31, 0, eax_val) if eax_val.size() > 32 else eax_val
+        edx_val = z3.If(z3.Extract(31, 31, eax_32) == 1, z3.BitVecVal(0xFFFFFFFF, 32), z3.BitVecVal(0, 32))
+        self._write_operand({'type': 'reg', 'value': 'edx', 'size': 4}, edx_val)
+
+    def _handle_cqo(self, instr):
+        rax_val, _ = self._read_operand({'type': 'reg', 'value': 'rax', 'size': 8})
+        rax_64 = z3.Extract(63, 0, rax_val) if rax_val.size() > 64 else rax_val
+        rdx_val = z3.If(z3.Extract(63, 63, rax_64) == 1, z3.BitVecVal(0xFFFFFFFFFFFFFFFF, 64), z3.BitVecVal(0, 64))
+        self._write_operand({'type': 'reg', 'value': 'rdx', 'size': 8}, rdx_val)
+
     def _handle_math(self, instr):
         ops = instr.operands
         if len(ops) == 2:
@@ -578,6 +617,78 @@ class Z3Translator:
                 res = dst_val >> shift_count
             self._write_operand(dst, res)
             self.generate_shift_flags(instr, instr.mnemonic, dst_val, dst_size, shift_count, res)
+
+    def _handle_mul(self, instr):
+        ops = instr.operands
+        if len(ops) == 1:
+            src = ops[0]
+            src_val, src_size = self._read_operand(src)
+            if src_size == 32:
+                eax_val, _ = self._read_operand({'type': 'reg', 'value': 'eax'})
+                if instr.mnemonic == 'imul':
+                    prod = z3.SignExt(32, eax_val) * z3.SignExt(32, src_val)
+                else:
+                    prod = z3.ZeroExt(32, eax_val) * z3.ZeroExt(32, src_val)
+                self._write_operand({'type': 'reg', 'value': 'eax'}, z3.Extract(31, 0, prod))
+                self._write_operand({'type': 'reg', 'value': 'edx'}, z3.Extract(63, 32, prod))
+            elif src_size == 64:
+                rax_val, _ = self._read_operand({'type': 'reg', 'value': 'rax'})
+                if instr.mnemonic == 'imul':
+                    prod = z3.SignExt(64, rax_val) * z3.SignExt(64, src_val)
+                else:
+                    prod = z3.ZeroExt(64, rax_val) * z3.ZeroExt(64, src_val)
+                self._write_operand({'type': 'reg', 'value': 'rax'}, z3.Extract(63, 0, prod))
+                self._write_operand({'type': 'reg', 'value': 'rdx'}, z3.Extract(127, 64, prod))
+        elif len(ops) == 2:
+            dst, src = ops[0], ops[1]
+            dst_val, dst_size = self._read_operand(dst)
+            src_val, src_size = self._read_operand(src)
+            dst_val, src_val = self._match_sizes(dst_val, src_val)
+            res = dst_val * src_val
+            self._write_operand(dst, res)
+        elif len(ops) == 3:
+            dst, src1, src2 = ops[0], ops[1], ops[2]
+            _, dst_size = self._read_operand(dst)
+            s1_val, s1_size = self._read_operand(src1)
+            s2_val, s2_size = self._read_operand(src2)
+            s1_val, s2_val = self._match_sizes(s1_val, s2_val)
+            res = s1_val * s2_val
+            if res.size() > dst_size:
+                res = z3.Extract(dst_size - 1, 0, res)
+            elif res.size() < dst_size:
+                res = z3.SignExt(dst_size - res.size(), res)
+            self._write_operand(dst, res)
+
+    def _handle_div(self, instr):
+        ops = instr.operands
+        if len(ops) == 1:
+            src = ops[0]
+            src_val, src_size = self._read_operand(src)
+            is_signed = (instr.mnemonic == 'idiv')
+            if src_size == 32:
+                eax_val, _ = self._read_operand({'type': 'reg', 'value': 'eax'})
+                edx_val, _ = self._read_operand({'type': 'reg', 'value': 'edx'})
+                eax_32 = z3.Extract(31, 0, eax_val) if eax_val.size() > 32 else eax_val
+                edx_32 = z3.Extract(31, 0, edx_val) if edx_val.size() > 32 else edx_val
+                src_32 = z3.Extract(31, 0, src_val) if src_val.size() > 32 else src_val
+                dividend = z3.Concat(edx_32, eax_32)
+                divisor = z3.SignExt(32, src_32) if is_signed else z3.ZeroExt(32, src_32)
+                quotient = (dividend / divisor) if is_signed else z3.UDiv(dividend, divisor)
+                remainder = z3.SRem(dividend, divisor) if is_signed else z3.URem(dividend, divisor)
+                self._write_operand({'type': 'reg', 'value': 'eax'}, z3.Extract(31, 0, quotient))
+                self._write_operand({'type': 'reg', 'value': 'edx'}, z3.Extract(31, 0, remainder))
+            elif src_size == 64:
+                rax_val, _ = self._read_operand({'type': 'reg', 'value': 'rax'})
+                rdx_val, _ = self._read_operand({'type': 'reg', 'value': 'rdx'})
+                rax_64 = z3.Extract(63, 0, rax_val) if rax_val.size() > 64 else rax_val
+                rdx_64 = z3.Extract(63, 0, rdx_val) if rdx_val.size() > 64 else rdx_val
+                src_64 = z3.Extract(63, 0, src_val) if src_val.size() > 64 else src_val
+                dividend = z3.Concat(rdx_64, rax_64)
+                divisor = z3.SignExt(64, src_64) if is_signed else z3.ZeroExt(64, src_64)
+                quotient = (dividend / divisor) if is_signed else z3.UDiv(dividend, divisor)
+                remainder = z3.SRem(dividend, divisor) if is_signed else z3.URem(dividend, divisor)
+                self._write_operand({'type': 'reg', 'value': 'rax'}, z3.Extract(63, 0, quotient))
+                self._write_operand({'type': 'reg', 'value': 'rdx'}, z3.Extract(63, 0, remainder))
 
     def _handle_jcc(self, instr):
         ops = instr.operands

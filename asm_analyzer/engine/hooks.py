@@ -105,13 +105,16 @@ def setup_hooks(core_instance):
             # 1. Allow the native Speakeasy mock to execute
             rv = func(params)
             
-            # 2. Mark the previous instruction as a Taint Breaker
+            # 2. Mark the previous instruction as a Taint Breaker and tag input boundary
             if len(core_instance.tracker.trace_history) > 0:
                 record = core_instance.tracker.trace_history[-1]
+                record.is_input_boundary = (api_type in ("input", "input_conversion", "network_input"))
+                record.api_name = hook_api_name
+                record.api_type = api_type
                 # Simulating a Taint Break on RAX and volatile registers (standard x64 calling convention)
                 record.regs_write.extend(['rax', 'rcx', 'rdx', 'r8', 'r9', 'r10', 'r11'])
                 record.regs_write = list(set(record.regs_write))
-                print(f"  -> [Taint Breaker] Applied API boundary to {hook_api_name} at Tick {record.tick}")
+                print(f"  -> [Taint Breaker] Applied API boundary to {hook_api_name} (Input Boundary: {record.is_input_boundary}) at Tick {record.tick}")
                 
             # 3. Stop Point check
             if api_type == "input" or api_type == "network_input":

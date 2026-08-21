@@ -690,10 +690,10 @@ class Tracker:
         self.path_tree = PathTree()
         self.forward_cache: Dict[tuple, List['TraceRecord']] = {}
     
-    def compress_trace(self):
+    def compress_trace(self, min_iterations: int = 6):
         from asm_analyzer.engine.loop_compressor import TraceCompressor
         print("[*] Compressing trace history...")
-        self.compressed_trace = TraceCompressor.compress_trace(self.trace_history)
+        self.compressed_trace = TraceCompressor.compress_trace(self.trace_history, min_iterations=min_iterations)
         print(f"[+] Trace compressed from {len(self.trace_history)} to {len(self.compressed_trace)} elements.")
     
     def add_trace(self, record: TraceRecord):
