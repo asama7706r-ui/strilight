@@ -3,7 +3,7 @@
 #include <string.h>
 
 // crackme_pointers.c
-// Array indexing, in-memory struct packing, swapping, and indirect pointer resolution.
+// Array indexing, in-memory packed struct swapping, and indirect pointer resolution.
 
 #pragma pack(push, 1)
 struct Element {
@@ -29,7 +29,7 @@ int check_key(int key) {
         arr[i].c = (char)(key + i * 0x3);
     }
 
-    // Do some pointer arithmetic and swaps
+    // Struct swap in stack memory
     struct Element temp = arr[1];
     arr[1] = arr[2];
     arr[2] = temp;
@@ -37,9 +37,9 @@ int check_key(int key) {
     // Indirect pointer resolution
     struct Element *p = &arr[key % 4];
     
-    int val = arr[1].a + arr[1].b + arr[1].c;
+    int val = arr[1].a + (int)p->b * 0x10 + (int)p->c;
 
-    if (val == 0x2cd7) {
+    if (val == 32554) {
         return 1;
     }
     return 0;

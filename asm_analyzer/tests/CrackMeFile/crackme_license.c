@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // crackme_license.c
-// Multi-segment key validation with mixed sign-extensions (cdqe, movsxd, movzx, cwd, cdq).
+// Multi-segment license key validation with active sign-extensions and mixed-width 64-bit arithmetic.
 
 int check_key(int key) {
     if (key < 1000 || key > 9999) {
@@ -11,24 +11,23 @@ int check_key(int key) {
         return 0;
     }
 
-    // Treat the key as 4 bytes
-    unsigned char b1 = (key >> 24) & 0xFF;
-    unsigned char b2 = (key >> 16) & 0xFF;
-    unsigned char b3 = (key >> 8) & 0xFF;
-    unsigned char b4 = key & 0xFF;
+    // Extract segments
+    int8_t b3 = (int8_t)((key >> 8) & 0xFF);
+    int8_t b4 = (int8_t)(key & 0xFF);
 
-    // Use sign extensions
-    int16_t v1 = (int8_t)b4; 
-    int32_t v2 = (int16_t)v1; 
-    int64_t v3 = (int32_t)v2; 
-    
-    int neg_key = -key;
+    // 1. Sign extensions (8 -> 16 -> 32 -> 64)
+    int16_t s1 = (int16_t)b4;                       // cbw
+    int32_t s2 = (int32_t)s1 * 0x33 + (int16_t)b3;  // cwde
+    int64_t s3 = (int64_t)s2;                       // cdqe
 
-    int64_t magic = (int64_t)neg_key;
-    int32_t p = (int32_t)magic; 
-    int64_t q = p;
+    // 2. Negation and 64-bit sign-extension
+    int32_t neg_part = -((int32_t)b3 * 0x111 + (int32_t)b4); // neg
+    int64_t s4 = (int64_t)neg_part;                 // cdqe
 
-    if (q == -1337) {
+    // 3. Combined 64-bit license equation
+    int64_t final_license = (s3 * 0x1337) ^ s4;
+
+    if (final_license == -14324782LL) {
         return 1;
     }
     return 0;

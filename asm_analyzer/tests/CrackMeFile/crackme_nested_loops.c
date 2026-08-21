@@ -2,7 +2,7 @@
 #include <stdlib.h>
 
 // crackme_nested_loops.c
-// Outer loop + Inner loop where inner loop iterations and step deltas depend on symbolic user input.
+// Outer loop + Inner loop where inner loop iterations and step deltas depend on full 16-bit symbolic user input.
 
 unsigned int rol(unsigned int val, int r_bits) {
     int max_bits = 32;
@@ -16,16 +16,16 @@ int check_key(int key) {
     }
 
     unsigned int v = 0xAA;
-    for (int i = 0; i < 5; i++) {
-        int delta = (key >> i) & 0xF;
+    for (int i = 0; i < 4; i++) {
+        int delta = (key >> (i * 4)) & 0xF;
         for (int j = 0; j < delta; j++) {
             v = (v ^ 0x55) + 1;
             v = rol(v, 1);
         }
-        v += i;
+        v += i * 0x100;
     }
 
-    if (v == 0x5af5880) {
+    if (v == 0x2642564) {
         return 1;
     }
     return 0;

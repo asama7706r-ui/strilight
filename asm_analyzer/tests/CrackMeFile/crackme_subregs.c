@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 // crackme_subregs.c
-// Deep interleaved usage of 8-bit, 16-bit, 32-bit, and 64-bit writes on the same registers.
-// Partial memory overlaps.
+// Deep interleaved usage of 8-bit (AL, AH, BL, BH, CL, CH, DL, DH),
+// 16-bit (AX, BX, CX, DX), 32-bit (EAX, EBX, ECX, EDX), and 64-bit (RAX, RBX, RCX, RDX)
+// with overlapping byte-level memory writes.
 
 int check_key(int key) {
     if (key < 1000 || key > 9999) {
@@ -11,31 +13,40 @@ int check_key(int key) {
         return 0;
     }
 
-    // Use a large constant to fill rax initially
-    unsigned long long mixed_val = 0x1122334455667788ULL;
+    uint64_t rax_val = 0x1122334455667788ULL;
+    uint64_t rbx_val = (uint64_t)key;
+    uint32_t cx_val = 0;
+    uint32_t dl_val = 0;
 
     __asm__ __volatile__(
-        "mov rbx, %1 \n\t"
-        "mov rax, %2 \n\t"
-        "mov al, bl \n\t"
-        "mov ah, bh \n\t"
-        "shr ebx, 16 \n\t"
-        "mov bx, 0 \n\t"
-        "add ax, bx \n\t"
-        "mov %0, rax \n\t"
-        : "=r" (mixed_val)
-        : "r" ((unsigned long long)key), "r" (mixed_val)
-        : "rax", "rbx"
+        "mov al, bl \n\t"              // al = key & 0xFF (0x39)
+        "mov ah, bh \n\t"              // ah = (key >> 8) & 0xFF (0x05)
+        "xor al, 0x5A \n\t"            // al = 0x39 ^ 0x5A = 0x63
+        "add ah, 0x12 \n\t"            // ah = 0x05 + 0x12 = 0x17
+        "mov cl, al \n\t"              // cl = 0x63
+        "add cl, ah \n\t"              // cl = 0x63 + 0x17 = 0x7A
+        "mov ch, 0xAA \n\t"            // ch = 0xAA -> cx = 0xAA7A
+        "mov dl, bl \n\t"              // dl = 0x39
+        "add dl, 1 \n\t"               // dl = 0x3A
+        : "+a" (rax_val), "=c" (cx_val), "=d" (dl_val)
+        : "b" (rbx_val)
     );
 
-    unsigned char buffer[16] = {0};
-    unsigned int *dw_ptr = (unsigned int *)buffer;
-    *dw_ptr = (unsigned int)(mixed_val & 0xFFFFFFFF);
+    uint8_t buffer[8] = {0};
 
-    unsigned short *w_ptr = (unsigned short *)(buffer + 1);
-    *w_ptr = (unsigned short)((mixed_val >> 32) & 0xFFFF);
+    // 1. Write 32-bit EAX at buffer[0..3]
+    uint32_t *dw_ptr = (uint32_t *)buffer;
+    *dw_ptr = (uint32_t)(rax_val & 0xFFFFFFFF);
 
-    if (*dw_ptr == 0x55334439) {
+    // 2. Overlap write 16-bit CX at buffer[2..3]
+    uint16_t *w_ptr = (uint16_t *)(buffer + 2);
+    *w_ptr = (uint16_t)(cx_val & 0xFFFF);
+
+    // 3. Overlap write 8-bit DL at buffer[1]
+    buffer[1] = (uint8_t)(dl_val & 0xFF);
+
+    // Read full 32-bit value at buffer[0]
+    if (*dw_ptr == 0xAA7A3A63) {
         return 1;
     }
 
