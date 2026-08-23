@@ -1,33 +1,23 @@
 """
 =============================================================================
-             STRIDED LOOP COMPRESSOR & SMT LIFTING ENGINE DEMO
+             STRILIGHT: SMT LOOP LIFTING & VSA COMPRESSOR DEMO
 =============================================================================
 Showcases:
-1. Raw Machine Code Bytes Disassembly via Capstone -> Instruction Schema
-2. Trace Compression from 100,000 instructions -> LoopBlock in <1 ms
-3. Strided Interval & Dual-Mask VSA Evaluation
-4. Instant Zero-Unroll SMT Lifting to Z3 (Solving in O(1) time)
+1. sl.disassemble: Disassemble raw machine code bytes with Capstone
+2. sl.compress / sl.evaluate: Abstract interpretation with Strided Intervals
+3. sl.analyze: One-line closed-form loop analysis
+4. O(1) SMT Lifting: Solving for N = 100,000 in <100 ms with Z3
 =============================================================================
 """
 
-import sys
 import time
-import capstone
 import z3
-
-from strilight import (
-    Instruction,
-    LoopBlock,
-    TraceCompressor,
-    LoopEvaluator,
-    StridedInterval
-)
-from strilight.engine.translator import Z3Translator
+import strilight as sl
 
 
 def main():
     print("=" * 70)
-    print("   [+] STRIDED LOOP COMPRESSOR & ZERO-UNROLL SMT LIFTING DEMO")
+    print("   [+] STRILIGHT: ZERO-UNROLL SMT LOOP LIFTING DEMO")
     print("=" * 70)
 
     # -------------------------------------------------------------------------
@@ -43,28 +33,18 @@ def main():
     loop_hex = "83c008" "83eb03" "6bd202" "ffc1" "81f9a0860100" "7ced"
     code_bytes = bytes.fromhex(loop_hex)
 
-    print(f"\n[Step 1] Disassembling raw machine code bytes ({len(code_bytes)} bytes) via Capstone...")
-    instructions = Instruction.disassemble_bytes(code_bytes, base_address=0x1000, bit_mode=64)
+    print(f"\n[Step 1] Disassembling raw machine code bytes ({len(code_bytes)} bytes) via sl.disassemble...")
+    instructions = sl.disassemble(code_bytes, base_address=0x1000, bit_mode=64)
     for insn in instructions:
         print(f"  0x{insn.address:04x}: {insn.mnemonic:<6} {insn.op_str}")
 
     # -------------------------------------------------------------------------
-    # 2. Trace Compression
+    # 2. Mathematical Evaluation via sl.evaluate
     # -------------------------------------------------------------------------
     iterations = 100000
-    print(f"\n[Step 2] Simulating Execution Trace with N = {iterations:,} iterations...")
-    
-    # We package the loop body into a LoopBlock representing 100,000 dynamic loop passes
-    loop_block = LoopBlock(body=instructions, iterations=iterations)
-    print(f"  -> Compressed into: {loop_block}")
-
-    # -------------------------------------------------------------------------
-    # 3. Mathematical Evaluation via VSA & Strided Interval Domain
-    # -------------------------------------------------------------------------
-    print("\n[Step 3] Evaluating Abstract State & Loop Invariants (Strided Interval Domain)...")
+    print(f"\n[Step 2] Evaluating Abstract State & Loop Invariants via sl.evaluate (N = {iterations:,})...")
     start_vsa = time.perf_counter()
-    evaluator = LoopEvaluator()
-    summary = evaluator.evaluate(loop_block)
+    summary = sl.evaluate(instructions, iterations=iterations)
     vsa_time_ms = (time.perf_counter() - start_vsa) * 1000
 
     print(f"  [-] VSA Evaluation Time: {vsa_time_ms:.3f} ms")
@@ -74,11 +54,11 @@ def main():
     print(f"  [-] Extracted Exit Condition: {summary.exit_condition}")
 
     # -------------------------------------------------------------------------
-    # 4. Zero-Unroll SMT Lifting to Z3
+    # 3. Zero-Unroll SMT Lifting to Z3
     # -------------------------------------------------------------------------
-    print(f"\n[Step 4] Lifting to Z3 SMT Solver with Zero-Unroll O(1) Closed-Form Encoding...")
+    print(f"\n[Step 3] Lifting to Z3 SMT Solver with Zero-Unroll O(1) Closed-Form Encoding...")
     start_z3 = time.perf_counter()
-    translator = Z3Translator()
+    translator = sl.Z3Translator()
 
     # Initial state: EAX = 0, EBX = 500,000, ECX = 0
     translator.solver.add(translator.get_register('eax') == 0)
