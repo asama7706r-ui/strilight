@@ -76,10 +76,10 @@ jobs:
           path: dist/*.whl
 
   # ===========================================================================
-  # 3. Automated GitHub Release (on Tag push: v*)
+  # 3. Automated Cross-Repository Release to Public Showcase (asama7706r-ui/strilight)
   # ===========================================================================
   release:
-    name: Publish GitHub Release with Wheels & Tests Package
+    name: Publish Binary Release to Public Repository
     needs: build-wheels
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -104,9 +104,29 @@ jobs:
           cp demo.py README.md test-bundle/
           cd test-bundle && zip -r ../release-assets/strilight-tests-bundle.zip . && cd ..
 
-      - name: Create GitHub Release & Upload Assets
+      - name: Sync Public Showcase README & Demo to Public Repo
+        env:
+          PUBLIC_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ secrets.PUBLIC_RELEASE_TOKEN }}" ]; then
+            echo "[*] Syncing README.md and demo.py to public repository..."
+            git clone https://x-access-token:${{ secrets.PUBLIC_RELEASE_TOKEN }}@github.com/asama7706r-ui/strilight.git public_repo || true
+            if [ -d "public_repo" ]; then
+              cp README.md demo.py public_repo/
+              cd public_repo
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add README.md demo.py
+              git diff --quiet && git diff --staged --quiet || (git commit -m "docs: Update public showcase README & Demo for ${{ github.ref_name }}" && git push origin main)
+              cd ..
+            fi
+          fi
+
+      - name: Publish Release to Public Repository
         uses: softprops/action-gh-release@v2
         with:
+          repository: asama7706r-ui/strilight
+          token: ${{ secrets.PUBLIC_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           files: release-assets/*
           name: Strilight ${{ github.ref_name }}
           body: |
