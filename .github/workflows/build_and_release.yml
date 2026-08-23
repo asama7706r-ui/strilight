@@ -34,13 +34,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel cython pytest
           pip install capstone>=5.0.0 z3-solver>=4.12.0
-          pip install -e .
 
-      - name: Run Unit & SMT Tests
+      - name: Run Core & SMT Unit Tests
         env:
           PYTHONPATH: .
         run: |
-          pytest strilight/tests -v --ignore=strilight/tests/test_engine_full.py --ignore=strilight/tests/test_library_full.py --ignore=strilight/tests/test_engine_integration.py --ignore=strilight/tests/test_engine.py --ignore=strilight/tests/test_core.py
+          pytest strilight/tests/test_facade.py strilight/tests/test_strided_interval_notion.py strilight/tests/test_loop_compressor.py strilight/tests/test_nested_loops.py strilight/tests/test_polycyclic.py strilight/tests/test_interval.py strilight/tests/test_disjoint_set.py strilight/tests/test_circular_theorems.py strilight/tests/test_vsa_evaluator.py strilight/tests/test_invariant_contract.py strilight/tests/test_translator.py strilight/tests/test_translator_edge_cases.py strilight/tests/test_deep_doubts.py strilight/tests/test_capstone_decoupling.py -v
 
   # ===========================================================================
   # 2. Build Binary Wheels (.whl) for Windows & Linux
