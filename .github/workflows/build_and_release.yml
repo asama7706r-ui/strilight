@@ -35,6 +35,10 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel cython pytest
           pip install capstone>=5.0.0 z3-solver>=4.12.0
 
+      - name: Install strilight package in development mode
+        run: |
+          pip install -e .
+
       - name: Run Unit & SMT Tests
         run: |
           pytest strilight/tests -v
