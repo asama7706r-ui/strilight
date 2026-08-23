@@ -1,3 +1,4 @@
+import os
 from typing import List, Dict, Any, Optional
 from collections import deque
 from asm_analyzer.engine.x86_defs import (
@@ -13,6 +14,12 @@ from asm_analyzer.engine.x86_defs import (
     MODIFIES_ALL_FLAGS,
     MODIFIES_ZSO_ONLY
 )
+
+DEBUG_TRACKER = os.environ.get("ASM_DEBUG_TRACKER", "0") == "1"
+
+def _debug_print(*args, **kwargs):
+    if DEBUG_TRACKER:
+        _debug_print(*args, **kwargs)
 
 class TraceRecord:
     def __init__(self, tick: int, address: int, size: int, mnemonic: str, op_str: str, thread_id: int = 0):
@@ -83,7 +90,7 @@ class BackwardSliceTracker:
                 mask = get_register_mask(descendant.target)
                 tracked_regs[base] = tracked_regs.get(base, 0) | mask
             
-            print(f"[*] Starting Backward Slicing for '{descendant.target}' from Tick {descendant.at_tick}")
+            _debug_print(f"[*] Starting Backward Slicing for '{descendant.target}' from Tick {descendant.at_tick}")
             hunting_for_control_dependency = False
             
             trace_list = self.ctx.compressed_trace if self.ctx.compressed_trace is not None else self.ctx.trace_history
@@ -143,11 +150,11 @@ class BackwardSliceTracker:
                             break
 
                     if not loop_modifies_target:
-                        print(f"  -> [Lazy Skip] Backward tracker skipping irrelevant loop block spanning Ticks {block.start_tick}->{block.end_tick}")
+                        _debug_print(f"  -> [Lazy Skip] Backward tracker skipping irrelevant loop block spanning Ticks {block.start_tick}->{block.end_tick}")
                         continue
                     else:
                         from asm_analyzer.engine.vsa_evaluator import LoopEvaluator
-                        print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets (regs={tracked_regs}, mem={tracked_mem}, flags={tracked_flags})")
+                        _debug_print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets (regs={tracked_regs}, mem={tracked_mem}, flags={tracked_flags})")
                         evaluator = LoopEvaluator()
                         summary = evaluator.evaluate(block)
                         summary.tick = block.start_tick  # Assign a tick for chronological sorting
@@ -168,13 +175,13 @@ class BackwardSliceTracker:
                                         # Also spawn a new descendant for it
                                         new_desc = Descendant(target=reg, at_tick=ex_record.tick)
                                         worklist.append(new_desc)
-                                        print(f"  -> [Taint Tracking] Added Control Variable '{reg}' (live_mask: 0x{tracked_regs[base_r]:x}) from exit condition to tracking targets!")
+                                        _debug_print(f"  -> [Taint Tracking] Added Control Variable '{reg}' (live_mask: 0x{tracked_regs[base_r]:x}) from exit condition to tracking targets!")
                                         
                                 for mem_addr in ex_record.mem_read:
                                     tracked_mem.add(mem_addr)
                                     new_desc = Descendant(target=mem_addr, at_tick=ex_record.tick, is_memory=True)
                                     worklist.append(new_desc)
-                                    print(f"  -> [Taint Tracking] Added Control Memory [0x{mem_addr:x}] from exit condition to tracking targets!")
+                                    _debug_print(f"  -> [Taint Tracking] Added Control Memory [0x{mem_addr:x}] from exit condition to tracking targets!")
                         
                         continue
 
@@ -201,7 +208,7 @@ class BackwardSliceTracker:
                                 worklist.append(new_desc)
                                 flags_added.append(f)
                         hunting_for_control_dependency = False
-                        print(f"  -> [Spawning Sub-Slice] Found Branch '{record.mnemonic} {record.op_str}' at Tick {record.tick}. Queued {flags_added}")
+                        _debug_print(f"  -> [Spawning Sub-Slice] Found Branch '{record.mnemonic} {record.op_str}' at Tick {record.tick}. Queued {flags_added}")
                         continue
 
                 # Check if this instruction writes to any register OR memory address we are tracking
@@ -229,7 +236,7 @@ class BackwardSliceTracker:
                     for target in tracked_mem:
                         if target in affected_addresses:
                             writes_to_target_mem = True
-                            print(f"  -> [Must-Alias] Absolute write to [0x{target:x}] at Tick {record.tick} (Size: {write_size} bytes)")
+                            _debug_print(f"  -> [Must-Alias] Absolute write to [0x{target:x}] at Tick {record.tick} (Size: {write_size} bytes)")
                             break
                             
                     # If not a direct Must-Alias write, check if this is a dynamic/symbolic pointer write (May-Alias)
@@ -249,7 +256,7 @@ class BackwardSliceTracker:
                                 for ptr in pointer_regs_used:
                                     new_desc = Descendant(target=ptr, at_tick=record.tick)
                                     worklist.append(new_desc)
-                                    print(f"  -> [May-Alias] Tracking pointer '{ptr}' at Tick {record.tick} for potential aliasing with {len(tracked_mem)} addresses")
+                                    _debug_print(f"  -> [May-Alias] Tracking pointer '{ptr}' at Tick {record.tick} for potential aliasing with {len(tracked_mem)} addresses")
                                     
                                     forward_slice = self.ctx.build_forward_slice(target=ptr, start_tick=record.tick, end_tick=global_end_tick, disable_fallback=True)
                                     slice_instructions.extend(forward_slice)
@@ -262,16 +269,16 @@ class BackwardSliceTracker:
                         writes_to_tracked_flag = True
                         flags_to_kill.extend(tracked_flags)
                         record.requested_flags.extend(list(tracked_flags))
-                        print(f"  -> [Flag Gen] Hit {record.mnemonic} at Tick {record.tick}, which satisfies {tracked_flags}")
+                        _debug_print(f"  -> [Flag Gen] Hit {record.mnemonic} at Tick {record.tick}, which satisfies {tracked_flags}")
                     elif record.mnemonic in self.ctx.MODIFIES_ZSO_ONLY:
                         affected_flags = [f for f in tracked_flags if f != "flag_cf"]
                         if affected_flags:
                             writes_to_tracked_flag = True
                             flags_to_kill.extend(affected_flags)
                             record.requested_flags.extend(affected_flags)
-                            print(f"  -> [Flag Gen] Hit {record.mnemonic} at Tick {record.tick}, which satisfies {affected_flags}")
+                            _debug_print(f"  -> [Flag Gen] Hit {record.mnemonic} at Tick {record.tick}, which satisfies {affected_flags}")
                         elif "flag_cf" in tracked_flags:
-                            print(f"  -> [Flag Ignore] Hit {record.mnemonic} at Tick {record.tick}, but it DOES NOT modify CF. Skipping!")
+                            _debug_print(f"  -> [Flag Ignore] Hit {record.mnemonic} at Tick {record.tick}, but it DOES NOT modify CF. Skipping!")
                 
                 # --- IMPLICIT DATA FLOW (JMP/CALL via Register/Memory) ---
                 implicit_flow_trigger = False
@@ -282,7 +289,7 @@ class BackwardSliceTracker:
                             read_mask = get_register_mask(op)
                             if tracked_regs[base_op] & read_mask:
                                 implicit_flow_trigger = True
-                                print(f"  -> [Implicit Data Flow] Context-to-Physical-Interval Triggered at Tick {record.tick}")
+                                _debug_print(f"  -> [Implicit Data Flow] Context-to-Physical-Interval Triggered at Tick {record.tick}")
                                 break
                 
                 if writes_to_target_reg or writes_to_target_mem or implicit_flow_trigger or writes_to_tracked_flag or may_alias_triggered:
@@ -299,7 +306,7 @@ class BackwardSliceTracker:
                                 is_taint_breaker = True
                             
                     if is_taint_breaker and record.mnemonic != 'call':
-                        print(f"  -> [Taint Breaker] Hit dead-end at Tick {record.tick} via ({record.mnemonic} {record.op_str}). Switching to Control Dependency!")
+                        _debug_print(f"  -> [Taint Breaker] Hit dead-end at Tick {record.tick} via ({record.mnemonic} {record.op_str}). Switching to Control Dependency!")
                         
                     if is_taint_breaker:
                         hunting_for_control_dependency = True
@@ -315,10 +322,10 @@ class BackwardSliceTracker:
                                     new_mask = old_mask & ~write_mask
                                     if new_mask == 0:
                                         del tracked_regs[base_out]
-                                        print(f"  -> [Kill Phase] Full kill on '{base_out}' (0x{old_mask:x} -> 0x0) at Tick {record.tick}")
+                                        _debug_print(f"  -> [Kill Phase] Full kill on '{base_out}' (0x{old_mask:x} -> 0x0) at Tick {record.tick}")
                                     else:
                                         tracked_regs[base_out] = new_mask
-                                        print(f"  -> [Kill Phase] Partial kill on '{base_out}' (0x{old_mask:x} -> 0x{new_mask:x}) at Tick {record.tick}")
+                                        _debug_print(f"  -> [Kill Phase] Partial kill on '{base_out}' (0x{old_mask:x} -> 0x{new_mask:x}) at Tick {record.tick}")
                                         
                     if writes_to_tracked_flag:
                         for f in flags_to_kill:
@@ -339,20 +346,20 @@ class BackwardSliceTracker:
                                     continue # Already spawned as a sub-slice descendant
                                 mask_in = get_register_mask(reg_in)
                                 tracked_regs[base_in] = tracked_regs.get(base_in, 0) | mask_in
-                                print(f"  -> Found Ancestor Reg '{reg_in}' (live_mask: 0x{tracked_regs[base_in]:x}) at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
+                                _debug_print(f"  -> Found Ancestor Reg '{reg_in}' (live_mask: 0x{tracked_regs[base_in]:x}) at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
                             
                         # INJECT SETCC FLAGS
                         if hasattr(self.ctx, 'SET_FLAGS') and record.mnemonic in self.ctx.SET_FLAGS:
                             for f in self.ctx.SET_FLAGS[record.mnemonic]:
                                 tracked_flags.add(f)
-                                print(f"  -> Found Ancestor Flag '{f}' at Tick {record.tick} via ({record.mnemonic})")
+                                _debug_print(f"  -> Found Ancestor Flag '{f}' at Tick {record.tick} via ({record.mnemonic})")
                         
                         if record.mem_read:
                             read_size = self.ctx._calculate_memory_access_size(record)
                             for mem_in in record.mem_read:
                                 for offset in range(read_size):
                                     tracked_mem.add(mem_in + offset)
-                                print(f"  -> Found Ancestor Mem '[0x{mem_in:x}]' (Size: {read_size}) at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
+                                _debug_print(f"  -> Found Ancestor Mem '[0x{mem_in:x}]' (Size: {read_size}) at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
 
             # 2. Save the resolved branch into PathTree for future use
             self.ctx.path_tree.cache_slice(descendant.target, descendant.at_tick, slice_instructions)
@@ -378,14 +385,14 @@ class ForwardSliceTracker:
             
         cache_key = (target, start_tick, end_tick)
         if hasattr(self.ctx, 'forward_cache') and cache_key in self.ctx.forward_cache:
-            print(f"[*] Forward Cache Hit for '{target}' from Tick {start_tick}")
+            _debug_print(f"[*] Forward Cache Hit for '{target}' from Tick {start_tick}")
             return self.ctx.forward_cache[cache_key]
 
         targets_to_track = {target}
         slice_instructions = []
         flag_generators: Dict[str, TraceRecord] = {}
         
-        print(f"[*] Starting Forward Slicing for '{target}' from Tick {start_tick} to {end_tick if end_tick else 'End'}")
+        _debug_print(f"[*] Starting Forward Slicing for '{target}' from Tick {start_tick} to {end_tick if end_tick else 'End'}")
         
         trace_list = self.ctx.compressed_trace if self.ctx.compressed_trace is not None else self.ctx.trace_history
         
@@ -401,7 +408,7 @@ class ForwardSliceTracker:
         
         for i in range(start_idx, len(trace_list)):
             if not targets_to_track:
-                print(f"  -> [Forward Taint Empty] All taints killed. Stopping forward trace.")
+                _debug_print(f"  -> [Forward Taint Empty] All taints killed. Stopping forward trace.")
                 break
                 
             item = trace_list[i]
@@ -434,11 +441,11 @@ class ForwardSliceTracker:
                         break
 
                 if not loop_modifies_target:
-                    print(f"  -> [Lazy Skip] Forward tracker skipping irrelevant loop block spanning Ticks {block.start_tick}->{block.end_tick}")
+                    _debug_print(f"  -> [Lazy Skip] Forward tracker skipping irrelevant loop block spanning Ticks {block.start_tick}->{block.end_tick}")
                     continue
                 else:
                     from asm_analyzer.engine.vsa_evaluator import LoopEvaluator
-                    print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets {targets_to_track}")
+                    _debug_print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets {targets_to_track}")
                     evaluator = LoopEvaluator()
                     summary = evaluator.evaluate(block)
                     summary.tick = block.start_tick
@@ -447,7 +454,7 @@ class ForwardSliceTracker:
                     slice_instructions.append(summary)
                     
                     # FIXED-POINT TAINT ANALYSIS
-                    print(f"  -> [Fixed-Point Taint] Starting taint propagation on loop body...")
+                    _debug_print(f"  -> [Fixed-Point Taint] Starting taint propagation on loop body...")
                     old_targets = set()
                     iters = 0
                     while old_targets != targets_to_track:
@@ -494,7 +501,7 @@ class ForwardSliceTracker:
                                     base_out = self.ctx.REG_TO_BASE.get(reg_out, reg_out)
                                     if not any(self.ctx.REG_TO_BASE.get(t, t) == base_out for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")):
                                         targets_to_track.add(reg_out)
-                                        print(f"  -> [Loop Taint Gen] Tainted Register '{reg_out}' at Tick {b_record.tick}")
+                                        _debug_print(f"  -> [Loop Taint Gen] Tainted Register '{reg_out}' at Tick {b_record.tick}")
                                         
                                 if b_record.mem_write:
                                     write_size = self.ctx._calculate_memory_access_size(b_record)
@@ -502,7 +509,7 @@ class ForwardSliceTracker:
                                     for addr in range(base_addr, base_addr + write_size):
                                         if addr not in targets_to_track:
                                             targets_to_track.add(addr)
-                                            print(f"  -> [Loop Taint Gen] Tainted Memory '[0x{addr:x}]' at Tick {b_record.tick}")
+                                            _debug_print(f"  -> [Loop Taint Gen] Tainted Memory '[0x{addr:x}]' at Tick {b_record.tick}")
                                             
                                 if b_record.mnemonic in self.ctx.MODIFIES_ALL_FLAGS or b_record.mnemonic in self.ctx.MODIFIES_ZSO_ONLY:
                                     affected_flags = ["flag_zf", "flag_sf", "flag_of"]
@@ -510,7 +517,7 @@ class ForwardSliceTracker:
                                     for f in affected_flags:
                                         if f not in targets_to_track: targets_to_track.add(f)
                                         
-                    print(f"  -> [Fixed-Point Taint] Stabilized after {iters} iterations.")
+                    _debug_print(f"  -> [Fixed-Point Taint] Stabilized after {iters} iterations.")
                     continue
                     
             record = item
@@ -545,10 +552,10 @@ class ForwardSliceTracker:
                             targets_to_track.remove(addr)
                             killed_mem.append(addr)
                     if killed_mem:
-                        print(f"  -> [Forward Taint Killed] Memory {killed_mem} killed at Tick {record.tick}")
+                        _debug_print(f"  -> [Forward Taint Killed] Memory {killed_mem} killed at Tick {record.tick}")
                 
                 if killed_regs:
-                    print(f"  -> [Forward Taint Killed] Registers {killed_regs} killed at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
+                    _debug_print(f"  -> [Forward Taint Killed] Registers {killed_regs} killed at Tick {record.tick} via ({record.mnemonic} {record.op_str})")
                 
                 # We skip taint propagation if it's a pure kill instruction
                 continue
@@ -571,14 +578,14 @@ class ForwardSliceTracker:
                 matched_flags = [f for f in tracked_flags if f in required_flags]
                 if matched_flags:
                     reads_tracked_flag = True
-                    print(f"  -> [Forward Constraint] Hit {record.mnemonic} at Tick {record.tick} which depends on {matched_flags}")
+                    _debug_print(f"  -> [Forward Constraint] Hit {record.mnemonic} at Tick {record.tick} which depends on {matched_flags}")
                     # RETROACTIVE PULL
                     for f in matched_flags:
                         if f in flag_generators:
                             gen_record = flag_generators[f]
                             if f not in gen_record.requested_flags:
                                 gen_record.requested_flags.append(f)
-                                print(f"  -> [Retroactive Pull] Requested {f} from Tick {gen_record.tick}")
+                                _debug_print(f"  -> [Retroactive Pull] Requested {f} from Tick {gen_record.tick}")
 
             if reads_from_target_reg or reads_from_target_mem or reads_tracked_flag:
                 # EVALUATE JUMP TAKEN
@@ -597,7 +604,7 @@ class ForwardSliceTracker:
                 if not reads_tracked_flag and not disable_fallback: # Ignore fallback for jumps (they just read flags)
                     unknown_regs = [r for r in record.regs_read if r not in targets_to_track and not r.startswith("flag_") and r not in {'eip', 'rip', 'eflags', 'rflags'}]
                     if unknown_regs:
-                        print(f"  -> [Forward Backward-Fallback] Found unknown registers {unknown_regs} at Tick {record.tick}. Initiating backward trace!")
+                        _debug_print(f"  -> [Forward Backward-Fallback] Found unknown registers {unknown_regs} at Tick {record.tick}. Initiating backward trace!")
                         backward_tracer = BackwardSliceTracker(self.ctx)
                         for unk in unknown_regs:
                             fallback_slice = backward_tracer.build_backward_slice(Descendant(target=unk, at_tick=record.tick))
@@ -608,7 +615,7 @@ class ForwardSliceTracker:
                     base_out = self.ctx.REG_TO_BASE.get(reg_out, reg_out)
                     if not any(self.ctx.REG_TO_BASE.get(t, t) == base_out for t in targets_to_track if isinstance(t, str) and not t.startswith("flag_")):
                         targets_to_track.add(reg_out)
-                        print(f"  -> [Forward Taint Gen] Tainted Register '{reg_out}' at Tick {record.tick}")
+                        _debug_print(f"  -> [Forward Taint Gen] Tainted Register '{reg_out}' at Tick {record.tick}")
                 
                 # Propagate taint to output memory
                 if record.mem_write:
@@ -619,7 +626,7 @@ class ForwardSliceTracker:
                     for addr in affected_addresses:
                         if addr not in targets_to_track:
                             targets_to_track.add(addr)
-                            print(f"  -> [Forward Taint Gen] Tainted Memory '[0x{addr:x}]' at Tick {record.tick}")
+                            _debug_print(f"  -> [Forward Taint Gen] Tainted Memory '[0x{addr:x}]' at Tick {record.tick}")
 
                 # Propagate taint to output flags (e.g. from CMP or ADD)
                 if record.mnemonic in self.ctx.MODIFIES_ALL_FLAGS or record.mnemonic in self.ctx.MODIFIES_ZSO_ONLY:
@@ -636,7 +643,7 @@ class ForwardSliceTracker:
                             added_flags.append(f)
                             
                     if added_flags:
-                        print(f"  -> [Forward Flag Taint] Tainted flags {added_flags} at Tick {record.tick} via {record.mnemonic}")
+                        _debug_print(f"  -> [Forward Flag Taint] Tainted flags {added_flags} at Tick {record.tick} via {record.mnemonic}")
             else:
                 # KILL PHASE for untainted flags
                 if record.mnemonic in self.ctx.MODIFIES_ALL_FLAGS or record.mnemonic in self.ctx.MODIFIES_ZSO_ONLY:
@@ -648,7 +655,7 @@ class ForwardSliceTracker:
                         if f in flag_generators:
                             del flag_generators[f]
                     if killed_flags:
-                        print(f"  -> [Forward Taint Killed] Flags {killed_flags} killed at Tick {record.tick} via {record.mnemonic} (Untainted inputs)")
+                        _debug_print(f"  -> [Forward Taint Killed] Flags {killed_flags} killed at Tick {record.tick} via {record.mnemonic} (Untainted inputs)")
                         
         # Deduplicate and sort chronologically (Flat Merge)
         unique_instructions = {record.tick: record for record in slice_instructions}
@@ -692,9 +699,9 @@ class Tracker:
     
     def compress_trace(self, min_iterations: int = 6):
         from asm_analyzer.engine.loop_compressor import TraceCompressor
-        print("[*] Compressing trace history...")
+        _debug_print("[*] Compressing trace history...")
         self.compressed_trace = TraceCompressor.compress_trace(self.trace_history, min_iterations=min_iterations)
-        print(f"[+] Trace compressed from {len(self.trace_history)} to {len(self.compressed_trace)} elements.")
+        _debug_print(f"[+] Trace compressed from {len(self.trace_history)} to {len(self.compressed_trace)} elements.")
     
     def add_trace(self, record: TraceRecord):
         """Append an executed instruction to the history."""

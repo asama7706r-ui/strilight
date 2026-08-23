@@ -1,12 +1,84 @@
 import copy
-from typing import Dict, Optional, List, TYPE_CHECKING
+from typing import Dict, Optional, List, Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from asm_analyzer.engine.tracker import TraceRecord
 from asm_analyzer.engine.abstract_state import AbstractState
 from asm_analyzer.pruning.interval import Interval, DisjointIntervalSet
 from asm_analyzer.engine.loop_compressor import LoopBlock
-from asm_analyzer.engine.x86_defs import get_instruction_type, get_flags_read, REG_TO_BASE
+from asm_analyzer.engine.x86_defs import get_instruction_type, get_flags_read, REG_TO_BASE, REGISTER_SIZES, get_register_mask
 from asm_analyzer.engine.tracker_bridge import TrackerBridge
+class LoopInvariantContract:
+    """
+    Explicit mathematical contract for loop invariants and exact termination boundaries.
+    Provides closed-form induction formulas for both iteration N and iteration N-1 (the Iron Constraint).
+    """
+    def __init__(self, summary: 'LoopSummary'):
+        self.summary = summary
+
+    def get_induction_formulas(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Returns the closed-form transition equations for each induction variable:
+        - At iteration N: State(N) = State_0 + Delta * N
+        - At iteration N-1 (Pre-exit Iron State): State(N-1) = State_0 + Delta * (N - 1)
+        """
+        formulas = {}
+        for var, delta in self.summary.deltas.items():
+            formulas[var] = {
+                "delta": delta,
+                "formula_at_N": f"{var}_0 + ({delta}) * N",
+                "formula_at_N_minus_1": f"{var}_0 + ({delta}) * (N - 1)"
+            }
+        for var, pattern in self.summary.patterns.items():
+            p_len = len(pattern)
+            p_sum = sum(pattern)
+            formulas[var] = {
+                "pattern": pattern,
+                "period": p_len,
+                "cycle_sum": p_sum,
+                "formula_at_N": f"{var}_0 + (N // {p_len}) * {p_sum} + prefix_sum(N % {p_len})",
+                "formula_at_N_minus_1": f"{var}_0 + ((N - 1) // {p_len}) * {p_sum} + prefix_sum((N - 1) % {p_len})"
+            }
+        for var, const_val in self.summary.constant_sets.items():
+            formulas[var] = {
+                "constant": const_val,
+                "formula_at_N": str(const_val),
+                "formula_at_N_minus_1": str(const_val)
+            }
+        return formulas
+
+    def get_exit_invariant_rule(self) -> str:
+        """
+        The fundamental Iron Constraint:
+        A loop terminating strictly at iteration N requires:
+        1. ExitCondition(State(N)) == True  [The exit branch is taken / header condition fails]
+        2. ExitCondition(State(N-1)) == False for N > 0  [The loop was NOT exited prematurely at iteration N-1]
+        """
+        cond_str = self.summary.exit_condition or "Unknown Exit"
+        return (
+            f"Iron Constraint: Enforce [{cond_str}] evaluated at State(N) == True "
+            f"AND Implies(N > 0, [{cond_str}] evaluated at State(N-1) == False)"
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes the invariant contract into a standard dictionary/JSON format."""
+        exit_instructions = []
+        for r in getattr(self.summary, 'exit_records', []):
+            if hasattr(r, 'mnemonic'):
+                exit_instructions.append({
+                    "address": getattr(r, 'address', 0),
+                    "mnemonic": getattr(r, 'mnemonic', ''),
+                    "op_str": getattr(r, 'op_str', ''),
+                    "jump_taken": getattr(r, 'jump_taken', False)
+                })
+        return {
+            "exit_condition_text": self.summary.exit_condition,
+            "exit_instructions": exit_instructions,
+            "induction_formulas": self.get_induction_formulas(),
+            "iron_constraint_rule": self.get_exit_invariant_rule(),
+            "iterations_bound": self.summary.iterations
+        }
+
+
 class LoopSummary:
     """
     Symbolic mathematical summary of a loop's effect.
@@ -39,6 +111,15 @@ class LoopSummary:
         self.direct_constant_sets: Dict[str, int] = {}
         self.tick: Optional[int] = None
 
+    @property
+    def invariant_contract(self) -> LoopInvariantContract:
+        """Returns the formal mathematical invariant contract for this loop."""
+        return LoopInvariantContract(self)
+
+    def get_invariant_contract(self) -> LoopInvariantContract:
+        """Helper to retrieve the formal mathematical invariant contract."""
+        return LoopInvariantContract(self)
+
 
 class LoopEvaluator:
     """
@@ -51,8 +132,8 @@ class LoopEvaluator:
     Conditional loop-exit instructions are simply bundled into `summary.exit_records` and handed 
     over to `Z3Translator` for actual mathematical control-flow translation.
     """
-    def __init__(self):
-        pass
+    def __init__(self, k_passes: int = 100):
+        self.k_passes = k_passes
         
     def _extract_ops(self, body, state_0):
         for record in body:
@@ -98,8 +179,8 @@ class LoopEvaluator:
         # Pre-initialize registers and active memory to Symbolic Zero [0, 0] to extract relative Deltas
         self._extract_ops(loop_block.body, state_0)
             
-        # Run K passes (K = 8) to discover scalar deltas and polycyclic periodic stride patterns
-        K = 8
+        # Run K passes (K = 100) to discover scalar deltas and polycyclic periodic stride patterns
+        K = getattr(self, 'k_passes', 100)
         passes = [state_0]
         for _ in range(K):
             next_state = self._run_pass(loop_block.body, passes[-1])
@@ -325,7 +406,29 @@ class LoopEvaluator:
             state.set_register(dest_key, new_dset)
             if dest_key in REG_TO_BASE:
                 base = REG_TO_BASE[dest_key]
-                state.set_register(base, copy.deepcopy(new_dset))
+                reg_size = REGISTER_SIZES.get(dest_key.lower(), dst_size)
+                if reg_size >= 4:
+                    # 32-bit writes in x86_64 zero-extend to 64-bit and wipe upper 32 bits
+                    # 64-bit writes replace base directly
+                    if reg_size == 4:
+                        base_dset = DisjointIntervalSet(k_limit=8)
+                        for iv in new_dset.intervals:
+                            base_dset.add(iv.zero_extend(src_bit_width=32, dst_bit_width=64))
+                        state.set_register(base, base_dset)
+                    else:
+                        state.set_register(base, copy.deepcopy(new_dset))
+                else:
+                    # 8-bit / 16-bit writes: preserve untouched upper bits in base register!
+                    mask = get_register_mask(dest_key)
+                    current_base_dset = state.get_register(base)
+                    if current_base_dset and current_base_dset.intervals:
+                        blended_dset = DisjointIntervalSet(k_limit=8)
+                        for base_iv in current_base_dset.intervals:
+                            for sub_iv in new_dset.intervals:
+                                blended_dset.add(base_iv.blend(sub_iv, mask))
+                        state.set_register(base, blended_dset)
+                    else:
+                        state.set_register(base, copy.deepcopy(new_dset))
 
         def get_src_dset(src_op):
             if src_op['type'] == 'imm':
@@ -507,6 +610,8 @@ class LoopEvaluator:
             # Arithmetic & Bitwise Logic
             'add': lambda: _eval_binary_op(lambda d, s: d.add(s)),
             'sub': lambda: _eval_binary_op(lambda d, s: d.sub(s)),
+            'imul': lambda: _eval_binary_op(lambda d, s: d.mul(s)),
+            'mul': lambda: _eval_binary_op(lambda d, s: d.mul(s)),
             'neg': _eval_neg_op,
             'xor': lambda: _eval_binary_op(lambda d, s: d.bitwise_xor(s)),
             'and': lambda: _eval_binary_op(lambda d, s: d.bitwise_and(s)),

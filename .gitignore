@@ -5,6 +5,14 @@ __pycache__/
 *.obj
 *.pdb
 *.ilk
+*.pyd
+*.so
+*.c
+build/
+dist/
+*.egg-info/
+.coverage
+.pytest_cache/
 .gemini/
 .vscode/
 *.log

@@ -1,31 +1,13 @@
-from typing import List, Union
-from asm_analyzer.engine.tracker import TraceRecord
+from typing import List, Union, Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from asm_analyzer.engine.tracker import TraceRecord
 
 class LoopBlock:
     """
-    Represents a compressed block of TraceRecords that repeats multiple times.
+    Represents a compressed block of Instructions / TraceRecords that repeats multiple times.
     Phase 1: Tagging and Structural Compression.
-    
-    ================================================================================
-    TODO / FUTURE ARCHITECTURE ROADMAP: Fixing Structural Loop Flaws
-    ================================================================================
-    1. Partial Final-Iteration Execution (The Off-By-One Flaw):
-       Currently, we assume the loop exits strictly at the end of the block.
-       Future Fix: We must build a flexible positional tracking mechanism to compute
-       the exact index of the exit instruction. Operations occurring *after* the
-       exit instruction should be bypassed (not evaluated) during the final (N-th)
-       iteration to ensure mathematical precision for Mid-Condition loops.
-       
-    2. Compound & Correlated Exit Conditions (Short-circuiting Flaws):
-       If a loop has multiple exit paths or complex AND/OR logic, translating only 
-       the final exit condition is insufficient.
-       Future Fix: We must translate Loop Invariants ensuring no early exits were 
-       triggered during iterations 0 to N-1. The Z3 translation layer must be 
-       upgraded to model these correlated conditions to prevent Z3 from inferring 
-       false early exits.
-    ================================================================================
     """
-    def __init__(self, body: List[Union[TraceRecord, 'LoopBlock']], iterations: int):
+    def __init__(self, body: List[Union[Any, 'LoopBlock']], iterations: int):
         self.body = body
         self.iterations = iterations
         self.start_tick = self._get_first_tick(body)
@@ -34,14 +16,14 @@ class LoopBlock:
     def _get_first_tick(self, body):
         if not body: return -1
         first = body[0]
-        if isinstance(first, TraceRecord): return first.tick
-        return first.start_tick
+        if hasattr(first, 'start_tick'): return first.start_tick
+        return getattr(first, 'tick', -1)
 
     def _get_last_tick(self, body):
         if not body: return -1
         last = body[-1]
-        if isinstance(last, TraceRecord): return last.tick
-        return last.end_tick
+        if hasattr(last, 'end_tick'): return last.end_tick
+        return getattr(last, 'tick', -1)
 
     def __repr__(self):
         body_len = len(self.body)
@@ -55,7 +37,7 @@ class TraceCompressor:
     """
     
     @classmethod
-    def _hash_record(cls, record: Union[TraceRecord, 'LoopBlock']) -> int:
+    def _hash_record(cls, record: Union[Any, 'LoopBlock']) -> int:
         # We identify a matching instruction by its address.
         # For a LoopBlock, we hash its structural signature (body and iterations).
         if hasattr(record, 'body'):
@@ -64,7 +46,7 @@ class TraceCompressor:
         return getattr(record, 'address', 0)
 
     @classmethod
-    def compress_trace(cls, trace: List[Union[TraceRecord, 'LoopBlock']], min_iterations: int = 3) -> List[Union[TraceRecord, 'LoopBlock']]:
+    def compress_trace(cls, trace: List[Union[Any, 'LoopBlock']], min_iterations: int = 3) -> List[Union[Any, 'LoopBlock']]:
         """
         Compresses the trace by folding contiguous repeating sequences.
         Operates hierarchically (bottom-up) to compress nested loops.
@@ -82,7 +64,7 @@ class TraceCompressor:
         return current_trace
 
     @classmethod
-    def _compress_pass(cls, trace: List[Union[TraceRecord, 'LoopBlock']], min_iterations: int) -> List[Union[TraceRecord, 'LoopBlock']]:
+    def _compress_pass(cls, trace: List[Union[Any, 'LoopBlock']], min_iterations: int) -> List[Union[Any, 'LoopBlock']]:
         # Convert to an array of hashes for fast comparison
         hashed_trace = [cls._hash_record(r) for r in trace]
         n = len(trace)

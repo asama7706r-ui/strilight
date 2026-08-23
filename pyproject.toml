@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strided-loop-compressor"
+version = "0.1.0"
+description = "High-Performance O(1) SMT Loop Lifting & Strided Interval Domain for x86_64"
+readme = "README.md"
+authors = [
+    { name = "Developer" }
+]
+license = { text = "Proprietary / Dual-License" }
+requires-python = ">=3.9"
+dependencies = [
+    "capstone>=5.0.0"
+]
+
+[project.optional-dependencies]
+tracker = []
+solver = [
+    "z3-solver>=4.12.0"
+]
+all = [
+    "capstone>=5.0.0",
+    "z3-solver>=4.12.0"
+]
+
+[tool.setuptools.packages.find]
+include = ["asm_analyzer*"]
+exclude = ["asm_analyzer.tests*"]

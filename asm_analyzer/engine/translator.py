@@ -178,6 +178,11 @@ class Z3Translator:
             self.latest_versions[phys_name] = 0
         return self.reg_state[phys_name]
 
+    def get_register(self, reg_name: str) -> z3.BitVecRef:
+        """Public helper to get the current symbolic Z3 BitVec representation of any register or subregister."""
+        expr, _ = self._read_operand({'type': 'reg', 'value': reg_name.lower().strip()})
+        return expr
+
     def _clobber_register(self, phys_name: str):
         ssa_name = self._get_new_ssa_name(phys_name)
         new_var = z3.BitVec(ssa_name, 64)
@@ -1012,6 +1017,11 @@ class Z3Translator:
         from asm_analyzer.engine.vsa_evaluator import LoopSummary
         if not isinstance(summary, LoopSummary):
             return
+
+        # 0. Read Formal Mathematical Invariant Contract from the Core Library
+        contract = getattr(summary, 'invariant_contract', None)
+        if contract is not None:
+            print(f"  [Z3Translator] Enforcing Loop Invariant Contract: {contract.get_exit_invariant_rule()}")
 
         # 1. Generate Unique Symbolic N per LoopBlock
         loop_tick = getattr(summary, 'tick', None)

@@ -1,21 +1,36 @@
 import sys
 from unittest.mock import MagicMock
+import pytest
 
-# Mock capstone
+# Save original capstone modules if present
+_orig_capstone = sys.modules.get('capstone')
+_orig_capstone_x86 = sys.modules.get('capstone.x86')
+
 mock_capstone = MagicMock()
 mock_capstone.CS_ARCH_X86 = 0
 mock_capstone.CS_MODE_64 = 0
 mock_cs_instance = MagicMock()
 mock_capstone.Cs.return_value = mock_cs_instance
-sys.modules['capstone'] = mock_capstone
 
 mock_capstone_x86 = MagicMock()
 mock_capstone_x86.X86_OP_REG = 1
 mock_capstone_x86.X86_OP_MEM = 2
 mock_capstone_x86.X86_OP_IMM = 3
-sys.modules['capstone.x86'] = mock_capstone_x86
 
-import pytest
+@pytest.fixture(autouse=True)
+def mock_capstone_env(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'capstone', mock_capstone)
+    monkeypatch.setitem(sys.modules, 'capstone.x86', mock_capstone_x86)
+    yield
+    if _orig_capstone is not None:
+        sys.modules['capstone'] = _orig_capstone
+    elif 'capstone' in sys.modules:
+        del sys.modules['capstone']
+    if _orig_capstone_x86 is not None:
+        sys.modules['capstone.x86'] = _orig_capstone_x86
+    elif 'capstone.x86' in sys.modules:
+        del sys.modules['capstone.x86']
+
 from asm_analyzer.engine.hooks import setup_hooks
 from asm_analyzer.engine.tracker import Tracker, TraceRecord
 

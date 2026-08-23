@@ -1,6 +1,5 @@
-from typing import List, Set, Union, Optional
+from typing import List, Set, Union, Optional, Any, Tuple, TYPE_CHECKING
 import copy
-from asm_analyzer.engine.tracker import TraceRecord
 from asm_analyzer.engine.loop_compressor import LoopBlock
 from asm_analyzer.engine.x86_defs import (
     get_flags_written,
@@ -9,34 +8,32 @@ from asm_analyzer.engine.x86_defs import (
     REG_TO_BASE,
     BASE_TO_REGS
 )
-from typing import Tuple
+if TYPE_CHECKING:
+    from asm_analyzer.engine.tracker import TraceRecord
 
 class TrackerBridge:
     """
-    Facade layer to decouple instruction tracking logic from the VSA Evaluator.
-    Provides generic helper functions for extracting instruction dependencies.
+    Default Embedded Intra-Block Tracer & Condition Resolver.
+    Decouples instruction tracking logic from the VSA Evaluator.
+    Supports optional external custom tracers.
     """
-    
+    custom_tracer: Optional[Any] = None
+
+    @classmethod
+    def register_tracer(cls, tracer: Any):
+        """Allows users to plug in a custom external tracer engine (e.g. Frida, Ghidra, angr)."""
+        cls.custom_tracer = tracer
+
     @staticmethod
     def get_intra_block_slice(
-        body: List[Union[TraceRecord, LoopBlock]], 
+        body: List[Union[Any, LoopBlock]], 
         start_idx: int, 
         targets: Set[str],
         induction_vars: Set[str] = set()
-    ) -> List[TraceRecord]:
+    ) -> List[Any]:
         """
         Performs a lazy, intra-block backward slice to find the instructions 
         that satisfy the required targets (e.g., flags).
-        
-        Args:
-            body: The sequence of instructions/blocks (e.g., loop_block.body)
-            start_idx: The index to start searching backward from (exclusive).
-            targets: A set of target variable/flag names to find writers for.
-            induction_vars: Induction variables of the loop whose self-updates are already captured by loop deltas.
-            
-        Returns:
-            A list of TraceRecords that generate the requested targets.
-            The list is in chronological order.
         """
         needed_targets = set(targets)
         slice_records = []
@@ -55,14 +52,14 @@ class TrackerBridge:
                 
             item = body[i]
             
-            # Handle Nested Loops gracefully to prevent the "Nested Loop Block" crash
-            if isinstance(item, LoopBlock):
+            # Handle Nested Loops gracefully
+            if hasattr(item, 'body'):
                 continue
                 
-            if isinstance(item, TraceRecord):
+            if hasattr(item, 'mnemonic'):
                 # Does this instruction write to any of our needed targets?
                 written_explicit = set()
-                for r in item.regs_write:
+                for r in getattr(item, 'regs_write', []):
                     base = REG_TO_BASE.get(r, r)
                     written_explicit.update(BASE_TO_REGS.get(base, {r}))
                     
@@ -112,15 +109,19 @@ class TrackerBridge:
         slice_records.reverse()
         return slice_records
 
-    @staticmethod
-    def evaluate_loop_exit(loop_block: LoopBlock, induction_vars: Set[str] = set()) -> Tuple[Optional[str], List[TraceRecord]]:
+    @classmethod
+    def evaluate_loop_exit(cls, loop_block: LoopBlock, induction_vars: Set[str] = set()) -> Tuple[Optional[str], List[Any]]:
         """
         Encapsulates all control-flow logic for finding and resolving 
         the loop's exit condition.
+        Delegates to custom_tracer if registered, otherwise runs Default Intra-Block Slicer.
         
         Returns:
             A tuple of (formatted_condition_string, list_of_exit_records)
         """
+        if cls.custom_tracer is not None and hasattr(cls.custom_tracer, 'evaluate_loop_exit'):
+            return cls.custom_tracer.evaluate_loop_exit(loop_block, induction_vars)
+
         cond_strings = []
         all_exit_records = []
         
