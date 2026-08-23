@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "strided-loop-compressor"
+name = "strilight"
 version = "0.1.0"
 description = "High-Performance O(1) SMT Loop Lifting & Strided Interval Domain for x86_64"
 readme = "README.md"
@@ -27,5 +27,5 @@ all = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["asm_analyzer*"]
-exclude = ["asm_analyzer.tests*"]
+include = ["strilight*"]
+exclude = ["strilight.tests*"]

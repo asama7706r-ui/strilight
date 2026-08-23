@@ -7,7 +7,7 @@
 This project implements a symbolic execution engine, focusing on translating x86-64 assembly instructions into Z3 constraints to perform program analysis and solve constraints. It relies on the `z3-solver` for constraint satisfaction, and uses `speakeasy` for emulation and dynamic binary instrumentation. 
 
 ## 2. Architecture Overview
-The engine's architecture is primarily organized within the `asm_analyzer/engine/` module:
+The engine's architecture is primarily organized within the `strilight/engine/` module:
 
 *   **`AnalyzerCore` (`core.py`)**: The main controller. It wraps the `speakeasy` emulator, loads the binary or shellcode, initializes memory footprint hashing, and starts the emulation process. It also manages the execution tick counter and coordinates the tracking.
 *   **`Hooks` (`hooks.py`)**: Registers callbacks with `speakeasy` to intercept execution at the instruction level (`hook_code`) and memory access level (`hook_mem_read`, `hook_mem_write`). It utilizes `capstone` to disassemble instructions, track register reads/writes, and populate the trace history.
@@ -35,5 +35,5 @@ The project uses `pytest` for unit testing to ensure the correctness of the engi
 
 Execute the unit tests using the following command from the repository root:
 ```bash
-PYTHONPATH=. python3 -m pytest asm_analyzer/tests/
+PYTHONPATH=. python3 -m pytest strilight/tests/
 ```

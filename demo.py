@@ -15,11 +15,14 @@ import time
 import capstone
 import z3
 
-from asm_analyzer.engine.instruction import Instruction
-from asm_analyzer.engine.loop_compressor import LoopBlock, TraceCompressor
-from asm_analyzer.engine.vsa_evaluator import LoopEvaluator
-from asm_analyzer.engine.translator import Z3Translator
-from asm_analyzer.pruning.interval import StridedInterval
+from strilight import (
+    Instruction,
+    LoopBlock,
+    TraceCompressor,
+    LoopEvaluator,
+    StridedInterval
+)
+from strilight.engine.translator import Z3Translator
 
 
 def main():

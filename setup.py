@@ -11,17 +11,17 @@ if USE_CYTHON:
     try:
         from Cython.Build import cythonize
         ext_modules = cythonize([
-            "asm_analyzer/pruning/interval.py",
-            "asm_analyzer/engine/loop_compressor.py",
-            "asm_analyzer/engine/vsa_evaluator.py",
-            "asm_analyzer/engine/tracker_bridge.py",
-            "asm_analyzer/engine/instruction.py",
+            "strilight/pruning/interval.py",
+            "strilight/engine/loop_compressor.py",
+            "strilight/engine/vsa_evaluator.py",
+            "strilight/engine/tracker_bridge.py",
+            "strilight/engine/instruction.py",
         ], compiler_directives={'language_level': "3"})
         print(" [Build] Compiling modules with Cython for proprietary binary distribution...")
     except ImportError:
         print(" [Warning] Cython not available, building pure Python package.")
 
 setup(
-    packages=find_packages(include=["asm_analyzer*"], exclude=["asm_analyzer.tests*"]),
+    packages=find_packages(include=["strilight*"], exclude=["strilight.tests*"]),
     ext_modules=ext_modules,
 )
