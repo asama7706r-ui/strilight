@@ -5,12 +5,17 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/status-Alpha%20%2F%20Research%20Prototype-yellow.svg" alt="Status">
   <img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python Version">
   <img src="https://img.shields.io/badge/unit%20tests-147%20passed%20%7C%20100%25-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/lifting-Zero--Unroll%20O(1)-orange.svg" alt="Lifting Mode">
   <img src="https://img.shields.io/badge/disassembler-Capstone%20Native-purple.svg" alt="Capstone">
   <img src="https://img.shields.io/badge/architecture-x86__64-red.svg" alt="Arch">
 </p>
+
+> [!WARNING]
+> **Project Status (Alpha / Research Prototype):**
+> Strilight is currently in its early **Alpha phase**. It is a focused research implementation providing strong empirical proof of concept and mathematical foundations for eliminating the classical **Loop & Path Explosion Problem** via $O(1)$ SMT closed-form lifting. We actively welcome feedback, test cases, and community contributions!
 
 ---
 
