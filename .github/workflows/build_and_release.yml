@@ -1,0 +1,123 @@
+name: Build, Test and Release Strilight
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  # ===========================================================================
+  # 1. Automated Test Suite (Windows & Linux Matrix)
+  # ===========================================================================
+  test:
+    name: Test on ${{ matrix.os }} - Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-latest, ubuntu-latest ]
+        python-version: [ '3.10', '3.11', '3.12' ]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install Build & Test Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel cython pytest
+          pip install capstone>=5.0.0 z3-solver>=4.12.0
+
+      - name: Run Unit & SMT Tests
+        run: |
+          pytest strilight/tests -v
+
+  # ===========================================================================
+  # 2. Build Binary Wheels (.whl)
+  # ===========================================================================
+  build-wheels:
+    name: Build Wheels on ${{ matrix.os }} (Python ${{ matrix.python-version }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ windows-latest, ubuntu-latest ]
+        python-version: [ '3.10', '3.11', '3.12' ]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Compilers & Packaging Tools
+        run: |
+          python -m pip install --upgrade pip setuptools wheel cython
+
+      - name: Compile Cython Binary Extensions & Build Wheel
+        run: |
+          python setup.py build_ext --inplace --cython
+          python setup.py bdist_wheel
+
+      - name: Upload Wheel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*.whl
+
+  # ===========================================================================
+  # 3. Automated GitHub Release (on Tag push: v*)
+  # ===========================================================================
+  release:
+    name: Publish GitHub Release with Wheels
+    needs: build-wheels
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download all built wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: release-wheels
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Create GitHub Release & Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-wheels/*.whl
+          name: Strilight ${{ github.ref_name }}
+          body: |
+            # 🌟 Strilight ${{ github.ref_name }} Release
+            
+            High-Performance $O(1)$ SMT Loop Lifting & Strided Interval Domain for x86_64 Binary Analysis.
+            
+            ### 📦 Pre-compiled Binary Wheels:
+            Download the appropriate `.whl` file below and install it with:
+            ```bash
+            pip install <filename>.whl[solver]
+            ```
+            
+            ### ⚡ Features included:
+            - Zero-Unroll $O(1)$ Loop Compression.
+            - Strided Interval Domain & Dual-Mask VSA.
+            - The $N-1$ Iron Invariant Contract.
+            - Capstone Disassembler Integration.
+            - High-Level Facade API (`import strilight as sl`).
+          draft: false
+          prerelease: false
