@@ -79,7 +79,7 @@ jobs:
   # 3. Automated GitHub Release (on Tag push: v*)
   # ===========================================================================
   release:
-    name: Publish GitHub Release with Wheels
+    name: Publish GitHub Release with Wheels & Tests Package
     needs: build-wheels
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -93,31 +93,48 @@ jobs:
       - name: Download all built wheels
         uses: actions/download-artifact@v4
         with:
-          path: release-wheels
+          path: release-assets
           pattern: wheels-*
           merge-multiple: true
+
+      - name: Package Standalone Tests & Demo Bundle
+        run: |
+          mkdir -p test-bundle/tests
+          cp -r strilight/tests/* test-bundle/tests/
+          cp demo.py README.md test-bundle/
+          cd test-bundle && zip -r ../release-assets/strilight-tests-bundle.zip . && cd ..
 
       - name: Create GitHub Release & Upload Assets
         uses: softprops/action-gh-release@v2
         with:
-          files: release-wheels/*.whl
+          files: release-assets/*
           name: Strilight ${{ github.ref_name }}
           body: |
             # 🌟 Strilight ${{ github.ref_name }} Release
             
             High-Performance $O(1)$ SMT Loop Lifting & Strided Interval Domain for x86_64 Binary Analysis.
             
-            ### 📦 Pre-compiled Binary Wheels:
-            Download the appropriate `.whl` file below and install it with:
+            ---
+            
+            ### 📦 Included Release Assets:
+            1. **Pre-compiled Binary Wheels (`.whl`):** Closed binary wheels for Windows & Linux (Python 3.10 - 3.12).
+            2. **Standalone Test & Documentation Bundle (`strilight-tests-bundle.zip`):** Contains `demo.py`, `README.md`, and all pure unit test suites for verifying your installation!
+            
+            ---
+            
+            ### 🚀 Quick Installation:
             ```bash
-            pip install <filename>.whl[solver]
+            # 1. Install the wheel
+            pip install strilight-0.1.0-py3-none-any.whl[solver]
+            
+            # 2. Run verification demo
+            python demo.py
             ```
             
-            ### ⚡ Features included:
-            - Zero-Unroll $O(1)$ Loop Compression.
-            - Strided Interval Domain & Dual-Mask VSA.
-            - The $N-1$ Iron Invariant Contract.
-            - Capstone Disassembler Integration.
-            - High-Level Facade API (`import strilight as sl`).
+            ### 🧪 To verify tests locally:
+            Unzip `strilight-tests-bundle.zip` and run:
+            ```bash
+            pytest tests/ -v
+            ```
           draft: false
           prerelease: false
