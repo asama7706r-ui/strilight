@@ -33,15 +33,6 @@ Instead of simulating $N$ iterations, **Strilight** compresses repetitive execut
 
 ## ⚡ 2. Key Architectural Innovations
 
-```mermaid
-graph LR
-    A[Raw Machine Code / Trace] --> B[sl.disassemble & sl.compress]
-    B --> C[sl.evaluate / LoopEvaluator]
-    C -->|Strided Interval Domain| D[LoopSummary + Invariant Contract]
-    D -->|O(1) Closed-Form Lifting| E[Z3 / SMT-LIB2 Solver]
-    E --> F[Instant Solution in <100 ms!]
-```
-
 1. **Zero-Unroll Trace Compression:** Identifies back-edges and compresses millions of linear instruction traces into compact hierarchical `LoopBlock` graphs in $<1\text{ ms}$.
 2. **Strided Interval Domain & Dual-Mask VSA:** Tracks register and memory transformations using strides and modular congruences:
    $$s[l, u] = \{ x \mid l \le x \le u \land (x - l) \equiv 0 \pmod s \}$$
