@@ -1,3 +1,4 @@
+import logging
 from typing import List, Set, Union, Optional, Any, Tuple, TYPE_CHECKING
 import copy
 from strilight.engine.loop_compressor import LoopBlock
@@ -10,6 +11,8 @@ from strilight.engine.x86_defs import (
 )
 if TYPE_CHECKING:
     from strilight.engine.tracker import TraceRecord
+
+logger = logging.getLogger("strilight.engine.tracker_bridge")
 
 class TrackerBridge:
     """
@@ -164,16 +167,16 @@ class TrackerBridge:
                         # it must be the back-edge of an INNER nested loop!
                         if loop_addresses:
                             min_addr = min(loop_addresses)
-                            print(f"[DEBUG TRACKER_BRIDGE] JMP BACKWARD: {exit_jmp.mnemonic} to {hex(target_addr)}. Min addr is {hex(min_addr)}")
+                            logger.debug("JMP BACKWARD: %s to %s. Min addr is %s", exit_jmp.mnemonic, hex(target_addr), hex(min_addr))
                             if target_addr > min_addr:
-                                print(f"[DEBUG TRACKER_BRIDGE] -> IGNORED (target {hex(target_addr)} > min {hex(min_addr)})")
+                                logger.debug("-> IGNORED (target %s > min %s)", hex(target_addr), hex(min_addr))
                                 continue
-                            print(f"[DEBUG TRACKER_BRIDGE] -> ACCEPTED as back-edge!")
+                            logger.debug("-> ACCEPTED as back-edge!")
                         exit_jmp.jump_taken = False
                     else:
                         # Case 3: Jumps FORWARDS inside the loop (e.g. an internal if-statement). 
                         # This is an intra-loop branch, not an exit condition! We ignore it.
-                        print(f"[DEBUG TRACKER_BRIDGE] JMP FORWARD: {exit_jmp.mnemonic} to {hex(target_addr)} (Ignored)")
+                        logger.debug("JMP FORWARD: %s to %s (Ignored)", exit_jmp.mnemonic, hex(target_addr))
                         continue
                         
                 except ValueError:
@@ -182,7 +185,7 @@ class TrackerBridge:
                 # 4. Format a human-readable condition string
                 cond_str = " & ".join([f"{r.mnemonic} {r.op_str}" for r in slice_records])
                 formatted_condition = f"[{cond_str}] -> {exit_jmp.mnemonic}(Taken:{exit_jmp.jump_taken})"
-                print(f"[DEBUG TRACKER_BRIDGE] Found Exit Condition: {formatted_condition}")
+                logger.debug("Found Exit Condition: %s", formatted_condition)
                 
                 cond_strings.append(formatted_condition)
                 all_exit_records.extend(slice_records)

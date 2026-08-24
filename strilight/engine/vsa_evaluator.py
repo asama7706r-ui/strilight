@@ -1,4 +1,5 @@
 import copy
+import logging
 from typing import Dict, Optional, List, Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from strilight.engine.tracker import TraceRecord
@@ -7,6 +8,8 @@ from strilight.pruning.interval import Interval, DisjointIntervalSet
 from strilight.engine.loop_compressor import LoopBlock
 from strilight.engine.x86_defs import get_instruction_type, get_flags_read, REG_TO_BASE, REGISTER_SIZES, get_register_mask
 from strilight.engine.tracker_bridge import TrackerBridge
+
+logger = logging.getLogger("strilight.engine.vsa_evaluator")
 class LoopInvariantContract:
     """
     Explicit mathematical contract for loop invariants and exact termination boundaries.
@@ -231,7 +234,7 @@ class LoopEvaluator:
             # 4. Check for Scalar Delta (P = 1)
             if all(d == step_deltas[0] for d in step_deltas):
                 summary.deltas[reg_name] = step_deltas[0]
-                print(f"  [LoopEvaluator] Extracted Scalar Delta for {reg_name}: {step_deltas[0]}")
+                logger.debug("Extracted Scalar Delta for %s: %s", reg_name, step_deltas[0])
                 continue
                 
             # 5. Check for Polycyclic Stride Pattern (P >= 2)
@@ -249,7 +252,7 @@ class LoopEvaluator:
                     
             if found_period is not None:
                 summary.patterns[reg_name] = found_period
-                print(f"  [LoopEvaluator] Extracted Polycyclic Pattern for {reg_name}: {found_period} (Period P={len(found_period)}, Sum={sum(found_period)})")
+                logger.debug("Extracted Polycyclic Pattern for %s: %s (Period P=%d, Sum=%d)", reg_name, found_period, len(found_period), sum(found_period))
                 
         # Discover child inner loops
         for item in loop_block.body:
@@ -287,12 +290,12 @@ class LoopEvaluator:
                             sd = [to_signed(vals[i] - vals[i-1]) for i in range(1, len(vals))]
                             if all(d == sd[0] for d in sd):
                                 summary.direct_deltas[reg_name] = sd[0]
-                                print(f"  [LoopEvaluator] Extracted Direct Outer Delta for {reg_name}: {sd[0]}")
+                                logger.debug("Extracted Direct Outer Delta for %s: %s", reg_name, sd[0])
                         
         # Delegate ALL control flow and condition analysis to the tracking facade
         cond_str, exit_records = TrackerBridge.evaluate_loop_exit(loop_block, induction_vars=set(summary.deltas.keys()))
-        print(f"\n[DEBUG TRACKER_BRIDGE] cond_str: {cond_str}")
-        print(f"[DEBUG TRACKER_BRIDGE] exit_records: {exit_records}")
+        logger.debug("cond_str: %s", cond_str)
+        logger.debug("exit_records: %s", exit_records)
         if cond_str:
             summary.exit_condition = cond_str
             summary.exit_records = exit_records

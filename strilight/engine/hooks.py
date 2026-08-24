@@ -1,8 +1,11 @@
+import logging
 import capstone
 from capstone.x86 import X86_OP_REG, X86_OP_MEM, X86_OP_IMM
 
 from strilight.engine.tracker import TraceRecord
 from strilight.engine.stop_dict import STOP_FUNCTIONS
+
+logger = logging.getLogger("strilight.engine.hooks")
 
 # Initialize capstone for disassembling intercepted instructions
 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
@@ -100,7 +103,7 @@ def setup_hooks(core_instance):
     # Register API Hooks based on STOP_FUNCTIONS
     def create_api_hook(api_name, api_type):
         def api_hook_callback(emu, hook_api_name, func, params):
-            print(f"[*] API Hook Triggered: {hook_api_name} (Type: {api_type}) at Tick {core_instance.tick_counter}")
+            logger.debug("API Hook Triggered: %s (Type: %s) at Tick %s", hook_api_name, api_type, core_instance.tick_counter)
             
             # 1. Allow the native Speakeasy mock to execute
             rv = func(params)
@@ -114,11 +117,11 @@ def setup_hooks(core_instance):
                 # Simulating a Taint Break on RAX and volatile registers (standard x64 calling convention)
                 record.regs_write.extend(['rax', 'rcx', 'rdx', 'r8', 'r9', 'r10', 'r11'])
                 record.regs_write = list(set(record.regs_write))
-                print(f"  -> [Taint Breaker] Applied API boundary to {hook_api_name} (Input Boundary: {record.is_input_boundary}) at Tick {record.tick}")
+                logger.debug("Applied API boundary to %s (Input Boundary: %s) at Tick %s", hook_api_name, record.is_input_boundary, record.tick)
                 
             # 3. Stop Point check
             if api_type == "input" or api_type == "network_input":
-                print(f"  -> [Stop Point] Interactive API {hook_api_name} detected. Stopping emulation!")
+                logger.info("Interactive API %s detected. Stopping emulation!", hook_api_name)
                 emu.stop()
                 
             return rv
@@ -134,4 +137,4 @@ def setup_hooks(core_instance):
     se.add_mem_read_hook(hook_mem_read)
     se.add_mem_write_hook(hook_mem_write)
     
-    print("[+] Hooks initialized successfully with Speakeasy API Classifier.")
+    logger.debug("Hooks initialized successfully with Speakeasy API Classifier.")

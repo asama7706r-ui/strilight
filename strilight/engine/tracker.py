@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import List, Dict, Any, Optional
 from collections import deque
 from strilight.engine.x86_defs import (
@@ -15,11 +16,11 @@ from strilight.engine.x86_defs import (
     MODIFIES_ZSO_ONLY
 )
 
-DEBUG_TRACKER = os.environ.get("ASM_DEBUG_TRACKER", "0") == "1"
+logger = logging.getLogger("strilight.engine.tracker")
 
 def _debug_print(*args, **kwargs):
-    if DEBUG_TRACKER:
-        _debug_print(*args, **kwargs)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(" ".join(str(a) for a in args))
 
 class TraceRecord:
     def __init__(self, tick: int, address: int, size: int, mnemonic: str, op_str: str, thread_id: int = 0):

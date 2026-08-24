@@ -1,9 +1,12 @@
 import os
 import copy
+import logging
 import speakeasy
 # pyrefly: ignore [missing-import]
 import speakeasy.config as cfg
 from strilight.engine.tracker import Tracker
+
+logger = logging.getLogger("strilight.engine.core")
 
 class AnalyzerCore:
     def __init__(self, target_path: list[str] = None, rootfs: str = ".", arch: str = "x8664", os_type: str = "windows", code: bytes = None):
@@ -16,7 +19,7 @@ class AnalyzerCore:
         :param os_type: OS type (e.g., 'windows').
         :param code: Optional shellcode bytes to run directly.
         """
-        print(f"[+] Initializing AnalyzerCore...")
+        logger.debug("Initializing AnalyzerCore...")
         
         custom_config = copy.deepcopy(cfg.DEFAULT_CONFIG_DATA)
         if target_path:
@@ -59,7 +62,7 @@ class AnalyzerCore:
 
     def start(self):
         """Start the emulation."""
-        print("[+] Starting emulation...")
+        logger.debug("Starting emulation...")
         self.initial_regs = {}
         for reg in ['rax', 'rbx', 'rcx', 'rdx', 'rsi', 'rdi', 'rbp', 'rsp', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15']:
             try:
@@ -70,5 +73,5 @@ class AnalyzerCore:
         try:
             self.se.run_module(self.module)
         except Exception as e:
-            print(f"[-] Emulation stopped/failed: {e}")
-        print(f"[+] Emulation finished. Total Ticks: {self.tick_counter}")
+            logger.warning("Emulation stopped/failed: %s", e)
+        logger.debug("Emulation finished. Total Ticks: %s", self.tick_counter)

@@ -4,9 +4,42 @@ Strilight: High-Performance O(1) SMT Loop Lifting & Strided Interval Domain
 A lightweight, high-performance abstract interpretation and symbolic loop-lifting library for x86_64 binaries.
 """
 
+import logging
+import sys
 from typing import List, Union, Optional
 
 __version__ = "0.1.0"
+
+# Module-level logger with default NullHandler (zero unwanted stdout noise when imported)
+logger = logging.getLogger("strilight")
+logger.addHandler(logging.NullHandler())
+
+
+def set_log_level(level: Union[int, str]):
+    """
+    Sets the logging level for the strilight root logger.
+    Example: sl.set_log_level(logging.DEBUG) or sl.set_log_level("INFO")
+    """
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+    logger.setLevel(level)
+
+
+def enable_logging(level: Union[int, str] = logging.INFO, stream=None):
+    """
+    Enables console logging for strilight with a clean, standard formatter.
+    """
+    if stream is None:
+        stream = sys.stderr
+    set_log_level(level)
+    
+    # Avoid adding multiple StreamHandlers
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.NullHandler) for h in logger.handlers):
+        handler = logging.StreamHandler(stream)
+        formatter = logging.Formatter("[%(levelname)s] [%(name)s] %(message)s")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
 
 # Core abstractions
 from strilight.engine.instruction import Instruction
@@ -71,6 +104,11 @@ __all__ = [
     "compress",
     "evaluate",
     "analyze",
+    
+    # Logging Configuration
+    "logger",
+    "set_log_level",
+    "enable_logging",
     
     # Core Classes
     "Instruction",

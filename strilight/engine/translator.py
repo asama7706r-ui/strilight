@@ -1,8 +1,11 @@
 import z3
 import re
+import logging
 from typing import List, Dict, Tuple
 from strilight.engine.tracker import TraceRecord
 from strilight.engine.x86_defs import REGISTER_HIERARCHY, PHYSICAL_REGS, REG_TO_BASE
+
+logger = logging.getLogger("strilight.engine.translator")
 
 class Z3Translator:
 
@@ -313,7 +316,7 @@ class Z3Translator:
                                 byte_val = int.from_bytes(concrete_byte, byteorder='little')
                                 byte_ast = z3.BitVecVal(byte_val, 8)
                                 if i == 0:
-                                    print(f'  -> [Smart Concretization] Resolved static memory at {hex(concrete_addr_val)} (Size: {size} bits)')
+                                    logger.debug("Resolved static memory at %s (Size: %d bits)", hex(concrete_addr_val), size)
                         except Exception:
                             pass
                 elif isinstance(byte_addr, z3.BitVecNumRef):
@@ -327,7 +330,7 @@ class Z3Translator:
                                 byte_val = int.from_bytes(concrete_byte, byteorder='little')
                                 byte_ast = z3.BitVecVal(byte_val, 8)
                                 if i == 0:
-                                    print(f'  -> [Smart Concretization] Resolved static memory at {hex(c_addr)} (Size: {size} bits)')
+                                    logger.debug("Resolved static memory at %s (Size: %d bits)", hex(c_addr), size)
                         except Exception:
                             pass
                 
@@ -365,7 +368,7 @@ class Z3Translator:
                         self.mem_read_idx += 1
                         byte_ast = z3.BitVec(mem_name, 8)
                         if i == 0:
-                            print(f'  -> [Symbolic Memory] Falling back to unknown for symbolic address at Tick {tick}')
+                            logger.debug("Falling back to unknown for symbolic address at Tick %s", tick)
                     else:
                         byte_ast = chain.pop()[1]
                     while chain:
@@ -736,10 +739,10 @@ class Z3Translator:
                 self.last_jcc_cond_ast = cond_ast
                 self.last_jcc_jump_taken = instr.jump_taken
                 if instr.jump_taken:
-                    print(f"  -> [OK] [Z3 Jump Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}")
+                    logger.debug("[Z3 Jump Taken] Added Constraint for %s at Tick %s", instr.mnemonic, instr.tick)
                     self.solver.add(cond_ast)
                 else:
-                    print(f"  -> [OK] [Z3 Jump Not Taken] Added Constraint for {instr.mnemonic} at Tick {instr.tick}")
+                    logger.debug("[Z3 Jump Not Taken] Added Constraint for %s at Tick %s", instr.mnemonic, instr.tick)
                     self.solver.add(z3.Not(cond_ast))
 
     def _handle_mul(self, instr):
@@ -870,7 +873,7 @@ class Z3Translator:
 
             def get_flag_warn(name):
                 if name not in self.flag_state:
-                    print(f"[!] Z3Translator WARNING: Flag '{name}' missing for '{instr.mnemonic}' at Tick {instr.tick}. Fallback to False (Missing info/Edge case not accounted for).")
+                    logger.warning("Flag '%s' missing for '%s' at Tick %s. Fallback to False (Missing info/Edge case not accounted for).", name, instr.mnemonic, instr.tick)
                     return z3.BoolVal(False)
                 return self.flag_state[name]
             zf = get_flag_warn('flag_zf')
@@ -936,7 +939,7 @@ class Z3Translator:
         if 'rax' in instr.regs_write:
             is_external = True
         if is_external:
-            print(f'  -> [Clobber] Call to external API at Tick {instr.tick}. Clobbering volatile registers.')
+            logger.debug("Call to external API at Tick %s. Clobbering volatile registers.", instr.tick)
             for r in ['rax', 'rcx', 'rdx', 'r8', 'r9', 'r10', 'r11']:
                 self._clobber_register(r)
 
@@ -994,13 +997,13 @@ class Z3Translator:
         self.mem_write_idx = 0
         handler = self.handlers.get(instr.mnemonic)
         if handler:
-            print(f"    [Z3Translator] Parsing {instr.mnemonic} {instr.op_str}")
+            logger.debug("Parsing %s %s", instr.mnemonic, instr.op_str)
             handler(instr)
         else:
-            print(f"[!] Z3Translator WARNING: Unhandled instruction '{instr.mnemonic} {instr.op_str}' at Tick {instr.tick}. Mathematical state may be lost!")
+            logger.warning("Unhandled instruction '%s %s' at Tick %s. Mathematical state may be lost!", instr.mnemonic, instr.op_str, instr.tick)
 
     def translate_slice(self, slice_records: List):
-        print('[+] Starting Z3 Translation Phase (Native Width Model)...')
+        logger.debug("Starting Z3 Translation Phase (Native Width Model)...")
         from strilight.engine.vsa_evaluator import LoopSummary
         chronological_slice = list(reversed(slice_records))
         for i, item in enumerate(chronological_slice):
@@ -1009,9 +1012,9 @@ class Z3Translator:
             else:
                 next_instr = chronological_slice[i + 1] if i + 1 < len(chronological_slice) else None
                 self.parse_instruction(item)
-        print('[+] Z3 Translation Complete. Assertions:')
+        logger.debug("Z3 Translation Complete. Assertions:")
         for assertion in self.solver.assertions():
-            print(f'  {assertion}')
+            logger.debug("  %s", assertion)
 
     def translate_loop_summary(self, summary, max_iterations: int):
         from strilight.engine.vsa_evaluator import LoopSummary
@@ -1021,7 +1024,7 @@ class Z3Translator:
         # 0. Read Formal Mathematical Invariant Contract from the Core Library
         contract = getattr(summary, 'invariant_contract', None)
         if contract is not None:
-            print(f"  [Z3Translator] Enforcing Loop Invariant Contract: {contract.get_exit_invariant_rule()}")
+            logger.debug("Enforcing Loop Invariant Contract: %s", contract.get_exit_invariant_rule())
 
         # 1. Generate Unique Symbolic N per LoopBlock
         loop_tick = getattr(summary, 'tick', None)
@@ -1077,7 +1080,7 @@ class Z3Translator:
         # 3.1. Process Child Inner Loops Symbolically
         inner_summaries = getattr(summary, 'inner_summaries', [])
         if inner_summaries:
-            print(f"  [Z3Translator] Found {len(inner_summaries)} Symbolic Child Inner Loop(s)!")
+            logger.debug("Found %d Symbolic Child Inner Loop(s)!", len(inner_summaries))
             for inner_sum in inner_summaries:
                 inner_tick = getattr(inner_sum, 'tick', None)
                 if inner_tick is not None:
@@ -1123,13 +1126,13 @@ class Z3Translator:
                 for reg_name, pattern in getattr(inner_sum, 'patterns', {}).items():
                     d_expr = _build_polycyclic_delta(N_inner, pattern, 64)
                     composed_inner_deltas[reg_name] = d_expr
-                    print(f"  [Z3Translator] Built Symbolic Inner Closed-Form Pattern for {reg_name} (Period P={len(pattern)})")
+                    logger.debug("Built Symbolic Inner Closed-Form Pattern for %s (Period P=%d)", reg_name, len(pattern))
                     
                 exit_cond_str = getattr(inner_sum, 'exit_condition', '') or ''
                 for reg_name, delta in getattr(inner_sum, 'deltas', {}).items():
                     if reg_name not in composed_inner_deltas and reg_name not in exit_cond_str:
                         composed_inner_deltas[reg_name] = z3.BitVecVal(delta, 64) * N_inner
-                        print(f"  [Z3Translator] Built Symbolic Inner Scalar Delta for {reg_name}: {delta} * {N_inner}")
+                        logger.debug("Built Symbolic Inner Scalar Delta for %s: %s * %s", reg_name, delta, N_inner)
                         
                 # Translate inner exit condition to bind N_inner
                 if getattr(inner_sum, 'exit_records', None):
@@ -1142,10 +1145,10 @@ class Z3Translator:
                         expected_shadow_jump_taken = not self.last_jcc_jump_taken
                         iron_c = cond_shadow_ast if expected_shadow_jump_taken else z3.Not(cond_shadow_ast)
                         self.add_tracked_constraint(z3.Implies(N_inner > 0, iron_c), f"Inner Loop Exit Iron Constraint (t{inner_tick})")
-                        print(f"  [Z3Translator] Inner Loop Exit Iron Constraint successfully injected for N_inner={N_inner}!")
+                        logger.debug("Inner Loop Exit Iron Constraint successfully injected for N_inner=%s!", N_inner)
 
         # 4. Apply Scalar Strides: Reg_new = Reg_old + Delta * N
-        print(f"  [Z3Translator] Loop Summary Deltas: {summary.deltas}")
+        logger.debug("Loop Summary Deltas: %s", summary.deltas)
         for reg_name, delta in summary.deltas.items():
             if reg_name in composed_inner_deltas:
                 step_delta = composed_inner_deltas[reg_name]
@@ -1211,7 +1214,7 @@ class Z3Translator:
         # 5. Apply Polycyclic Patterns (Closed-Form Formula: Total = Q * Sum + Remainder_Prefix[R])
         patterns = getattr(summary, 'patterns', {})
         if patterns:
-            print(f"  [Z3Translator] Loop Summary Polycyclic Patterns: {patterns}")
+            logger.debug("Loop Summary Polycyclic Patterns: %s", patterns)
             N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
             for reg_name, pattern in patterns.items():
                 if reg_name in composed_inner_deltas:
@@ -1248,7 +1251,7 @@ class Z3Translator:
                 shadow_subs.append((t_after, t_after_shadow_extracted))
 
         # 6. Handle Constant Sets from Loop body
-        print(f"  [Z3Translator] Loop Summary Constant Sets: {summary.constant_sets}")
+        logger.debug("Loop Summary Constant Sets: %s", summary.constant_sets)
         for reg_name, const_val in summary.constant_sets.items():
             if reg_name.startswith("MEM_"):
                 parts = reg_name.split("_")
@@ -1277,7 +1280,7 @@ class Z3Translator:
                 self.parse_instruction(record)
                 
             if self.last_jcc_cond_ast is not None and self.last_jcc_jump_taken is not None:
-                print(f"  [Z3Translator] Applying N-1 Iron Constraint!")
+                logger.debug("Applying N-1 Iron Constraint!")
                 
                 cond_shadow_ast = z3.substitute(self.last_jcc_cond_ast, *shadow_subs)
                 
@@ -1290,7 +1293,7 @@ class Z3Translator:
                     iron_constraint = z3.Not(cond_shadow_ast)
                     
                 self.add_tracked_constraint(z3.Implies(N > 0, iron_constraint), f"Outer Loop Exit Iron Constraint (t{loop_tick})")
-                print("  -> [OK] Loop exit equation successfully built and injected into solver.")
+                logger.debug("Loop exit equation successfully built and injected into solver.")
 
     def add_tracked_constraint(self, constraint: z3.BoolRef, label: str):
         """
@@ -1322,22 +1325,20 @@ class Z3Translator:
                 tracker_vars.append(p)
                 named_trackers[str(p)] = (label, constraint)
                 
-            print("\n[*] Running Fast Targeted Unsat Core Diagnostics on Loop & Semantic Constraints...")
+            logger.info("Running Fast Targeted Unsat Core Diagnostics on Loop & Semantic Constraints...")
             if solver.check(tracker_vars) == z3.unsat:
                 core = solver.unsat_core()
                 results = []
-                print(f"\n[!] ==================== UNSAT CORE DIAGNOSTICS ====================")
-                print(f"[!] Found {len(core)} conflicting semantic constraints in Z3:")
+                logger.warning("Found %d conflicting semantic constraints in Z3:", len(core))
                 for p in core:
                     label, expr = named_trackers[str(p)]
-                    msg = f"  -> [{label}]: {expr}"
-                    print(msg)
-                    results.append(msg)
-                print(f"[!] ==================================================================")
+                    msg = f"[{label}]: {expr}"
+                    logger.warning("  -> %s", msg)
+                    results.append(f"  -> [{label}]: {expr}")
                 return results
 
         # 2. Fallback: Check full assertion core
-        print("\n[*] Checking full assertion Unsat Core in Z3...")
+        logger.info("Checking full assertion Unsat Core in Z3...")
         fallback_solver = z3.Solver()
         full_named = {}
         full_trackers = []
@@ -1350,17 +1351,15 @@ class Z3Translator:
         if fallback_solver.check(full_trackers) == z3.unsat:
             core = fallback_solver.unsat_core()
             results = []
-            print(f"\n[!] ==================== UNSAT CORE DIAGNOSTICS ====================")
-            print(f"[!] Found {len(core)} conflicting mathematical assertions in Z3:")
+            logger.warning("Found %d conflicting mathematical assertions in Z3:", len(core))
             for p in core:
                 ast_str = str(full_named[str(p)])
                 if len(ast_str) > 150:
                     ast_str = ast_str[:150] + "..."
                 msg = f"  -> {ast_str}"
-                print(msg)
+                logger.warning(msg)
                 results.append(msg)
-            print(f"[!] ==================================================================")
             return results
         else:
-            print("[*] All individual tracked assertions are mutually consistent (Unsat caused by optimization objective or timeout).")
+            logger.info("All individual tracked assertions are mutually consistent (Unsat caused by optimization objective or timeout).")
             return []

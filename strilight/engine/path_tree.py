@@ -1,5 +1,8 @@
+import logging
 from typing import List, Dict, Tuple, Optional
 from strilight.engine.tracker import TraceRecord, Descendant
+
+logger = logging.getLogger("strilight.engine.path_tree")
 
 class PathNode:
     def __init__(self, record: TraceRecord):
@@ -28,7 +31,7 @@ class PathTree:
         were changed (e.g. VirtualProtect) prior to reaching this point.
         """
         self.dead_ends[(target, tick, mem_hash)] = reason
-        print(f"  [PathTree Dead-End] Node '{target}' at Tick {tick} marked as DEAD! Reason: {reason}")
+        logger.debug("Node '%s' at Tick %s marked as DEAD! Reason: %s", target, tick, reason)
 
     def is_dead_end(self, target: str, tick: int, mem_hash: str) -> bool:
         """Checks if a specific path state has already been proven to crash."""
@@ -41,7 +44,7 @@ class PathTree:
     def get_cached_slice(self, target: str, tick: int) -> Optional[List[TraceRecord]]:
         """Retrieve the pre-calculated backward slice."""
         if self.is_cached(target, tick):
-            print(f"  [PathTree Cache Hit] Found verified branch for '{target}' at Tick {tick}!")
+            logger.debug("Found verified branch for '%s' at Tick %s!", target, tick)
             return self.memoized_slices[(target, tick)]
         return None
 
@@ -52,4 +55,4 @@ class PathTree:
         preventing false similarity.
         """
         self.memoized_slices[(target, tick)] = slice_records
-        print(f"  [PathTree Cached] Saved branch for '{target}' at Tick {tick} (Length: {len(slice_records)})")
+        logger.debug("Saved branch for '%s' at Tick %s (Length: %d)", target, tick, len(slice_records))
