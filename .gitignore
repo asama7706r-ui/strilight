@@ -18,3 +18,4 @@ dist/
 *.log
 *.txt
 .agents/
+.release-tag
