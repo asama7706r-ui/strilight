@@ -40,7 +40,7 @@ jobs:
         env:
           PYTHONPATH: .
         run: |
-          pytest strilight/tests/test_facade.py strilight/tests/test_strided_interval_notion.py strilight/tests/test_loop_compressor.py strilight/tests/test_nested_loops.py strilight/tests/test_polycyclic.py strilight/tests/test_interval.py strilight/tests/test_disjoint_set.py strilight/tests/test_circular_theorems.py strilight/tests/test_vsa_evaluator.py strilight/tests/test_invariant_contract.py strilight/tests/test_translator.py strilight/tests/test_translator_edge_cases.py strilight/tests/test_deep_doubts.py strilight/tests/test_capstone_decoupling.py -v
+          pytest strilight/tests/test_facade.py strilight/tests/test_strided_interval_notion.py strilight/tests/test_loop_compressor.py strilight/tests/test_nested_loops.py strilight/tests/test_po[...]
 
   # ===========================================================================
   # 2. Build Binary Wheels (.whl) for Windows & Linux
@@ -96,8 +96,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
-          pattern: wheels-*
-          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: |
+          echo "Contents of release-assets:"
+          find release-assets -type f -ls
 
       - name: Package Standalone Tests & Demo Bundle
         run: |
@@ -105,6 +108,16 @@ jobs:
           cp -r strilight/tests/* test-bundle/tests/
           cp demo.py README.md test-bundle/
           cd test-bundle && zip -r ../release-assets/strilight-tests-bundle.zip . && cd ..
+          
+          # Ensure all artifacts are at the root of release-assets
+          find release-assets -name "*.whl" -type f | while read file; do
+            if [ "$(dirname "$file")" != "release-assets" ]; then
+              cp "$file" release-assets/
+            fi
+          done
+          
+          echo "Final release-assets contents:"
+          ls -la release-assets/
 
       - name: Sync Public Showcase README & Demo to Public Repo
         env:
