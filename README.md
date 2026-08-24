@@ -53,14 +53,14 @@ Instead of simulating $N$ iterations, **Strilight** compresses execution traces 
 
 ```mermaid
 graph TD
-    TRACE[Raw Trace / Machine Bytes] --> COMP[TraceCompressor: Hierarchical Loop Folding]
-    COMP --> LBLOCK[LoopBlock Tree]
-    LBLOCK --> VSA[LoopEvaluator: Pure Data-Flow VSA]
-    VSA --> SUMMARY[LoopSummary & InvariantContract]
-    SUMMARY --> TRANS[Z3Translator: SMT-LIB2 / Z3 BitVectors]
-    INT[Strided Interval Domain: Bézout GCD & Dual-Mask] <--> VSA
-    TRK[Tracker: BFS Worklist Backward Slicing] <--> INT
-    TRANS --> SOLVER[Z3 Solver: Instant O(1) Solution]
+    TRACE["Raw Trace / Machine Bytes"] --> COMP["TraceCompressor: Hierarchical Loop Folding"]
+    COMP --> LBLOCK["LoopBlock Tree"]
+    LBLOCK --> VSA["LoopEvaluator: Pure Data-Flow VSA"]
+    VSA --> SUMMARY["LoopSummary & InvariantContract"]
+    SUMMARY --> TRANS["Z3Translator: SMT-LIB2 / Z3 BitVectors"]
+    INT["Strided Interval Domain: Bézout GCD & Dual-Mask"] <--> VSA
+    TRK["Tracker: BFS Worklist Backward Slicing"] <--> INT
+    TRANS --> SOLVER["Z3 Solver: Instant O(1) Solution"]
 ```
 
 1. **Zero-Unroll Trace Compression (`TraceCompressor`):** Identifies backward edges and sliding-window patterns to compress millions of linear instruction traces into compact hierarchical `LoopBlock` graphs in $<1\text{ ms}$.
