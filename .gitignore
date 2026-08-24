@@ -17,3 +17,4 @@ dist/
 .vscode/
 *.log
 *.txt
+.agents/
