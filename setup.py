@@ -23,5 +23,6 @@ if USE_CYTHON:
 
 setup(
     packages=find_packages(include=["strilight*"], exclude=["strilight.tests*"]),
+    package_data={"strilight": ["py.typed"]},
     ext_modules=ext_modules,
 )

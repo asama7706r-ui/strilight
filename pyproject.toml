@@ -29,3 +29,6 @@ all = [
 [tool.setuptools.packages.find]
 include = ["strilight*"]
 exclude = ["strilight.tests*"]
+
+[tool.setuptools.package-data]
+strilight = ["py.typed"]
