@@ -1149,7 +1149,14 @@ class Z3Translator:
 
         # 4. Apply Scalar Strides: Reg_new = Reg_old + Delta * N
         logger.debug("Loop Summary Deltas: %s", summary.deltas)
+        seen_delta_bases = set()
         for reg_name, delta in summary.deltas.items():
+            if not reg_name.startswith("MEM_"):
+                base_reg = self._reg_to_base.get(reg_name, reg_name)
+                if base_reg in seen_delta_bases:
+                    continue
+                seen_delta_bases.add(base_reg)
+
             if reg_name in composed_inner_deltas:
                 step_delta = composed_inner_deltas[reg_name]
                 if reg_name.startswith("MEM_"):
@@ -1213,14 +1220,22 @@ class Z3Translator:
 
         # 5. Apply Polycyclic Patterns (Closed-Form Formula: Total = Q * Sum + Remainder_Prefix[R])
         patterns = getattr(summary, 'patterns', {})
+        pattern_scales = getattr(summary, 'pattern_scales', {})
         if patterns:
             logger.debug("Loop Summary Polycyclic Patterns: %s", patterns)
             N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
             for reg_name, pattern in patterns.items():
                 if reg_name in composed_inner_deltas:
                     continue
-                total_delta = _build_polycyclic_delta(N, pattern, 64)
-                total_delta_prev = _build_polycyclic_delta(N_prev, pattern, 64)
+                scale_var = pattern_scales.get(reg_name)
+                if scale_var:
+                    scale_base = self._reg_to_base.get(scale_var, scale_var)
+                    scale_ast = self._get_phys_reg(scale_base)
+                    total_delta = _build_polycyclic_delta(N, pattern, 64) * scale_ast
+                    total_delta_prev = _build_polycyclic_delta(N_prev, pattern, 64) * scale_ast
+                else:
+                    total_delta = _build_polycyclic_delta(N, pattern, 64)
+                    total_delta_prev = _build_polycyclic_delta(N_prev, pattern, 64)
                 
                 if reg_name.startswith("MEM_"):
                     parts = reg_name.split("_")
@@ -1249,6 +1264,72 @@ class Z3Translator:
                 t_after_shadow = z3.If(N > 0, t_before + total_delta_prev, t_before)
                 t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
                 shadow_subs.append((t_after, t_after_shadow_extracted))
+
+        # 5.1. Apply Geometric Shift Recurrences (Rule 6 - Positional Receipt: Sum_{i=0}^{N-1} 2^i * var = (2^N - 1) * var)
+        geometric_shifts = getattr(summary, 'geometric_shifts', {})
+        if geometric_shifts:
+            logger.debug("Loop Summary Geometric Shifts: %s", geometric_shifts)
+            N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
+            for reg_name, shift_info in geometric_shifts.items():
+                scale_base = shift_info.get('base', 2)
+                src_var_name = shift_info.get('var', None)
+                src_val_imm = shift_info.get('val', 1)
+                modulo_bits = shift_info.get('modulo_bits', 0)
+                
+                # Formula: ((1 << N) - 1) * src_val (Safe 64-bit bounds or 32-bit modulo shifts)
+                if modulo_bits == 32:
+                    loop_n = getattr(summary, 'iterations', 0)
+                    if isinstance(loop_n, int) and loop_n > 0:
+                        shift_coeff = sum(1 << (i & 31) for i in range(loop_n)) & 0xFFFFFFFF
+                        geom_factor = z3.BitVecVal(shift_coeff, 64)
+                        shift_coeff_prev = sum(1 << (i & 31) for i in range(max(0, loop_n - 1))) & 0xFFFFFFFF
+                        geom_factor_prev = z3.BitVecVal(shift_coeff_prev, 64)
+                    else:
+                        full_cycles = z3.UDiv(N, 32)
+                        rem = z3.URem(N, 32)
+                        geom_factor = (full_cycles * z3.BitVecVal(0xFFFFFFFF, 64)) + ((z3.BitVecVal(1, 64) << rem) - 1)
+                        full_cycles_prev = z3.UDiv(N_prev, 32)
+                        rem_prev = z3.URem(N_prev, 32)
+                        geom_factor_prev = (full_cycles_prev * z3.BitVecVal(0xFFFFFFFF, 64)) + ((z3.BitVecVal(1, 64) << rem_prev) - 1)
+                elif scale_base == 2:
+                    geom_factor = z3.If(z3.UGE(N, 64), z3.BitVecVal(0xFFFFFFFFFFFFFFFF, 64), (z3.BitVecVal(1, 64) << N) - 1)
+                    geom_factor_prev = z3.If(z3.UGE(N_prev, 64), z3.BitVecVal(0xFFFFFFFFFFFFFFFF, 64), (z3.BitVecVal(1, 64) << N_prev) - 1)
+                else:
+                    geom_factor = (z3.BitVecVal(scale_base, 64) ** N) - 1
+                    geom_factor_prev = (z3.BitVecVal(scale_base, 64) ** N_prev) - 1
+
+                if src_var_name:
+                    src_base = self._reg_to_base.get(src_var_name, src_var_name)
+                    src_ast = self._get_phys_reg(src_base)
+                    total_geom_delta = geom_factor * src_ast
+                    total_geom_delta_prev = geom_factor_prev * src_ast
+                else:
+                    total_geom_delta = geom_factor * z3.BitVecVal(src_val_imm, 64)
+                    total_geom_delta_prev = geom_factor_prev * z3.BitVecVal(src_val_imm, 64)
+                
+                if reg_name.startswith("MEM_"):
+                    parts = reg_name.split("_")
+                    addr = int(parts[1])
+                    size_bits = int(parts[2])
+                    t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
+                    if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
+                    t_after = t_before + total_geom_delta
+                    t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
+                    self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
+                    
+                    t_after_shadow = z3.If(N > 0, t_before + total_geom_delta_prev, t_before)
+                    t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
+                    shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
+                else:
+                    base_reg = self._reg_to_base.get(reg_name, reg_name)
+                    t_before = self._get_phys_reg(base_reg)
+                    self._clobber_register(base_reg)
+                    t_after = self._get_phys_reg(base_reg)
+                    self.solver.add(t_after == t_before + total_geom_delta)
+                    
+                    t_after_shadow = z3.If(N > 0, t_before + total_geom_delta_prev, t_before)
+                    t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
+                    shadow_subs.append((t_after, t_after_shadow_extracted))
 
         # 6. Handle Constant Sets from Loop body
         logger.debug("Loop Summary Constant Sets: %s", summary.constant_sets)

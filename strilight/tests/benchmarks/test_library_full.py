@@ -88,10 +88,11 @@ TEST_CASES = [
         "name": "crackme_strided_circular",
         "exe": "crackme_strided_circular.exe",
         "start_input": "1337",
-        "target_cmp_pattern": "0x55bbf9aa",
-        "goal_value": 0x55BBF9AA,
+        "target_cmp_pattern": "0x5d279287",
+        "goal_value": 0x5D279287,
         "key_bounds": (1000, 9999),
         "expected_key": 1337,
+        "compress": True,
     }
 ]
 
@@ -188,7 +189,7 @@ def run_crackme_case(test_case):
     if input_boundary_tick is not None:
         for r in chronological_slice:
             if hasattr(r, 'tick') and r.tick > input_boundary_tick:
-                if hasattr(r, 'mnemonic') and r.mnemonic == 'push' and 'rbp' in r.op_str:
+                if hasattr(r, 'mnemonic') and ((r.mnemonic == 'push' and 'rbp' in r.op_str) or (r.mnemonic == 'sub' and 'rsp' in r.op_str)):
                     check_key_start_tick = r.tick
                     break
 
@@ -196,7 +197,7 @@ def run_crackme_case(test_case):
     if check_key_start_tick is None:
         for r in chronological_slice:
             if hasattr(r, 'tick') and r.tick > 700:
-                if hasattr(r, 'mnemonic') and r.mnemonic == 'push' and 'rbp' in r.op_str:
+                if hasattr(r, 'mnemonic') and ((r.mnemonic == 'push' and 'rbp' in r.op_str) or (r.mnemonic == 'sub' and 'rsp' in r.op_str)):
                     check_key_start_tick = r.tick
                     break
 
@@ -205,7 +206,7 @@ def run_crackme_case(test_case):
             record.requested_flags = ["flag_zf", "flag_cf", "flag_sf", "flag_of"]
         
         if hasattr(record, 'mnemonic') and record.mnemonic.startswith('j') and record.mnemonic != 'jmp':
-            if record.tick < check_key_start_tick:
+            if record.tick < check_key_start_tick or record.tick >= target_tick + 1:
                 record.jump_taken = None 
 
         if record.tick == target_tick + 1:
@@ -296,10 +297,23 @@ if __name__ == '__main__':
     print(f"   [+] Testing Installed Library: strilight v{strilight.__version__}")
     print("=" * 70)
     
+    target_filter = sys.argv[1].lower() if len(sys.argv) > 1 else None
+    if target_filter:
+        selected_cases = [
+            tc for idx, tc in enumerate(TEST_CASES, 1)
+            if str(idx) == target_filter or target_filter in tc["name"].lower() or target_filter in tc["exe"].lower()
+        ]
+        if not selected_cases:
+            print(f"[-] No matching CrackMe found for filter: '{target_filter}'")
+            print(f"    Available: {', '.join(tc['name'] for tc in TEST_CASES)}")
+            sys.exit(1)
+    else:
+        selected_cases = TEST_CASES
+    
     results = []
-    for idx, tc in enumerate(TEST_CASES, 1):
+    for idx, tc in enumerate(selected_cases, 1):
         print(f"\n{'=' * 60}")
-        print(f"[{idx}/{len(TEST_CASES)}] Processing CrackMe: {tc['name']} ({tc['exe']})")
+        print(f"[{idx}/{len(selected_cases)}] Processing CrackMe: {tc['name']} ({tc['exe']})")
         print(f"{'=' * 60}")
         res = run_crackme_case(tc)
         results.append(res)

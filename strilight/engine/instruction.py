@@ -19,7 +19,8 @@ class Instruction:
         regs_write: Optional[List[str]] = None,
         mem_read: Optional[List[int]] = None,
         mem_write: Optional[List[int]] = None,
-        operands: Optional[List[Dict[str, Any]]] = None
+        operands: Optional[List[Dict[str, Any]]] = None,
+        jump_taken: bool = False
     ):
         self.address = address
         self.mnemonic = mnemonic.lower().strip() if mnemonic else ""
@@ -31,8 +32,8 @@ class Instruction:
         self.mem_read = list(mem_read) if mem_read else []
         self.mem_write = list(mem_write) if mem_write else []
         self.operands = list(operands) if operands else []
+        self.jump_taken = jump_taken
         self.requested_flags: List[str] = []
-        self.jump_taken: bool = False
 
     @classmethod
     def from_capstone(cls, cs_insn: capstone.CsInsn, tick: int = 0) -> 'Instruction':

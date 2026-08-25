@@ -156,7 +156,7 @@ class BackwardSliceTracker:
                     else:
                         from strilight.engine.vsa_evaluator import LoopEvaluator
                         _debug_print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets (regs={tracked_regs}, mem={tracked_mem}, flags={tracked_flags})")
-                        evaluator = LoopEvaluator()
+                        evaluator = LoopEvaluator(memory_provider=getattr(self.ctx, 'memory_provider', None))
                         summary = evaluator.evaluate(block)
                         summary.tick = block.start_tick  # Assign a tick for chronological sorting
                         
@@ -447,7 +447,7 @@ class ForwardSliceTracker:
                 else:
                     from strilight.engine.vsa_evaluator import LoopEvaluator
                     _debug_print(f"  -> [Phase 2] Evaluating LoopBlock spanning Ticks {block.start_tick}->{block.end_tick} for targets {targets_to_track}")
-                    evaluator = LoopEvaluator()
+                    evaluator = LoopEvaluator(memory_provider=getattr(self.ctx, 'memory_provider', None))
                     summary = evaluator.evaluate(block)
                     summary.tick = block.start_tick
                     
@@ -691,9 +691,10 @@ class Tracker:
                 write_size = max(write_size, self.REGISTER_SIZES[reg])
         return write_size
 
-    def __init__(self):
+    def __init__(self, memory_provider: Optional[Any] = None):
         self.trace_history: List[TraceRecord] = []
         self.compressed_trace = None
+        self.memory_provider = memory_provider
         from strilight.engine.path_tree import PathTree
         self.path_tree = PathTree()
         self.forward_cache: Dict[tuple, List['TraceRecord']] = {}

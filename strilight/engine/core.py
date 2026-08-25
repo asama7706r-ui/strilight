@@ -2,6 +2,10 @@ import os
 import copy
 import logging
 import speakeasy
+try:
+    import speakeasy.speakeasy
+except ImportError:
+    pass
 # pyrefly: ignore [missing-import]
 import speakeasy.config as cfg
 from strilight.engine.tracker import Tracker
@@ -39,7 +43,7 @@ class AnalyzerCore:
         self.module_size = self.module.image_size
         
         # Initialize Tracker for Backward Slicing
-        self.tracker = Tracker()
+        self.tracker = Tracker(memory_provider=self.se.mem_read)
         self.tick_counter = 0
         self.current_mem_reads = []
         self.current_mem_writes = []

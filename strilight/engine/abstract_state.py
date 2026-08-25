@@ -1,45 +1,58 @@
-from typing import Dict, List, Tuple
-from strilight.pruning.interval import Interval, DisjointIntervalSet
+from typing import Dict, List, Tuple, Union
+from strilight.pruning.interval import Interval, StridedInterval, DisjointIntervalSet
 
 class StridedMemoryMap:
     """
     Abstract memory mapping using Strided Intervals for fast, safe loop execution.
-    Implements 'Safe Approximation' for complex memory aliasing to maintain O(1) speed.
+    Implements 'Safe Approximation' and 'Bézout Modulo Congruence Non-Aliasing'
+    (Notion Sections 3 & 8) to maintain O(1) mathematical speed and zero false aliasing.
     """
     def __init__(self):
         # List of memory transactions: (address_interval, size_in_bytes, value_dset)
-        self.writes: List[Tuple[Interval, int, DisjointIntervalSet]] = []
+        self.writes: List[Tuple[Union[Interval, StridedInterval], int, DisjointIntervalSet]] = []
         
-    def write(self, addr: Interval, size: int, value: DisjointIntervalSet):
+    def write(self, addr: Union[Interval, StridedInterval], size: int, value: DisjointIntervalSet):
         """Records an abstract write transaction."""
         self.writes.append((addr, size, value))
         
-    def read(self, addr: Interval, size: int) -> DisjointIntervalSet:
+    def read(self, addr: Union[Interval, StridedInterval], size: int) -> DisjointIntervalSet:
         """
         Reads from the abstract memory.
-        Uses Safe Approximation: 
-        - If read exactly matches a recent write, returns the precise value.
-        - If partial/complex overlap is detected, returns TOP (UNKNOWN) to prevent CPU hang.
+        Uses Bézout Modulo Congruence Non-Aliasing (Rule 8.b.1) and Must-Alias (Rule 8.b.2):
+        - If proven Definite Non-Alias via gcd(s1, s2) or disjoint bounds: skip safely.
+        - If read exactly matches a recent write (Must-Alias): returns the precise value.
+        - If complex partial overlap is detected: returns TOP (UNKNOWN).
         """
         # Search backwards (most recent write first)
         for w_addr, w_size, w_value in reversed(self.writes):
-            # Check for physical intersection in the address space
-            intersected = addr.intersect(w_addr)
-            if intersected.min_val <= intersected.max_val:
-                # Overlap detected! 
-                # Check for exact match (Safe Approximation)
-                if (addr.min_val == w_addr.min_val and 
-                    addr.max_val == w_addr.max_val and 
-                    size == w_size and 
-                    addr.stride == w_addr.stride and 
-                    addr.stride_offset == w_addr.stride_offset):
+            # 1. Modulo Congruence Non-Alias Test (Bézout GCD)
+            if hasattr(addr, 'is_disjoint_modulo') and hasattr(w_addr, 'is_disjoint_modulo'):
+                if addr.is_disjoint_modulo(w_addr):
+                    continue  # Definite Non-Alias: No interference!
+                    
+            # 2. Must-Alias Test
+            if hasattr(addr, 'is_must_alias') and hasattr(w_addr, 'is_must_alias'):
+                if addr.is_must_alias(w_addr) and size == w_size:
                     return w_value
+                    
+            # 3. Fallback Intersection Check for Interval objects
+            if hasattr(addr, 'intersect') and hasattr(w_addr, 'intersect'):
+                intersected = addr.intersect(w_addr)
+                if intersected.min_val <= intersected.max_val:
+                    # Physical overlap detected
+                    if (addr.min_val == w_addr.min_val and 
+                        addr.max_val == w_addr.max_val and 
+                        size == w_size and 
+                        getattr(addr, 'stride', 1) == getattr(w_addr, 'stride', 1) and 
+                        getattr(addr, 'stride_offset', 0) == getattr(w_addr, 'stride_offset', 0)):
+                        return w_value
+                    else:
+                        # Complex partial overlap -> TOP (Safe Approximation)
+                        dset = DisjointIntervalSet(k_limit=8)
+                        dset.add(Interval(0, (1 << (size * 8)) - 1, size * 8))
+                        return dset
                 else:
-                    # Complex partial overlap (e.g., read 1 byte from a 4-byte write)
-                    # Safe approximation: return UNKNOWN (TOP)
-                    dset = DisjointIntervalSet(k_limit=8)
-                    dset.add(Interval(0, (1 << (size * 8)) - 1, size * 8))
-                    return dset
+                    continue
                     
         # Not found in writes, return TOP (Symbolic/Unknown initial memory)
         dset = DisjointIntervalSet(k_limit=8)
