@@ -9,8 +9,12 @@ from strilight.engine.vsa import (
     LoopInvariantContract,
     AffineExpr,
     RegisterCouplingMatrix,
+    TelescopingBranch,
+    TelescopingCascade,
     VSAInstructionDispatcher,
     SymbolicInductionAnalyzer,
+    LoopSMTTranslator,
+    LoopStateUpdate,
 )
 
 __all__ = [
@@ -19,6 +23,10 @@ __all__ = [
     "LoopInvariantContract",
     "AffineExpr",
     "RegisterCouplingMatrix",
+    "TelescopingBranch",
+    "TelescopingCascade",
     "VSAInstructionDispatcher",
     "SymbolicInductionAnalyzer",
+    "LoopSMTTranslator",
+    "LoopStateUpdate",
 ]

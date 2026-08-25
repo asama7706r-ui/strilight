@@ -61,19 +61,21 @@ TEST_CASES = [
         "name": "crackme_nested_loops",
         "exe": "crackme_nested_loops.exe",
         "start_input": "1337",
-        "target_cmp_pattern": "0x2642564",
-        "goal_value": 0x2642564,
+        "target_cmp_pattern": "0x31958",
+        "goal_value": 0x31958,
         "key_bounds": (1000, 9999),
         "expected_key": 1337,
+        "compress": True,
     },
     {
         "name": "crackme_pointers",
         "exe": "crackme_pointers.exe",
         "start_input": "1337",
-        "target_cmp_pattern": "0x7f2a",
-        "goal_value": 0x7F2A,
+        "target_cmp_pattern": "0x346f7",
+        "goal_value": 0x346F7,
         "key_bounds": (1000, 9999),
         "expected_key": 1337,
+        "compress": True,
     },
     {
         "name": "crackme_license",
@@ -90,6 +92,16 @@ TEST_CASES = [
         "start_input": "1337",
         "target_cmp_pattern": "0x5d279287",
         "goal_value": 0x5D279287,
+        "key_bounds": (1000, 9999),
+        "expected_key": 1337,
+        "compress": True,
+    },
+    {
+        "name": "crackme_telescoping",
+        "exe": "crackme_telescoping.exe",
+        "start_input": "1337",
+        "target_cmp_pattern": "0x6178d",
+        "goal_value": 0x6178D,
         "key_bounds": (1000, 9999),
         "expected_key": 1337,
         "compress": True,
@@ -186,18 +198,25 @@ def run_crackme_case(test_case):
 
     # 2. Find the verification function prologue immediately following the input boundary
     check_key_start_tick = None
+    callee_saved = ['rbp', 'rbx', 'rsi', 'rdi', 'r12', 'r13', 'r14', 'r15']
     if input_boundary_tick is not None:
         for r in chronological_slice:
             if hasattr(r, 'tick') and r.tick > input_boundary_tick:
-                if hasattr(r, 'mnemonic') and ((r.mnemonic == 'push' and 'rbp' in r.op_str) or (r.mnemonic == 'sub' and 'rsp' in r.op_str)):
+                if hasattr(r, 'mnemonic') and (
+                    (r.mnemonic == 'push' and any(reg in r.op_str for reg in callee_saved))
+                    or (r.mnemonic == 'sub' and 'rsp' in r.op_str)
+                ):
                     check_key_start_tick = r.tick
                     break
 
-    # 3. Fallback to first push rbp after CRT startup (> tick 700)
+    # 3. Fallback to first push callee-saved after CRT startup (> tick 700)
     if check_key_start_tick is None:
         for r in chronological_slice:
             if hasattr(r, 'tick') and r.tick > 700:
-                if hasattr(r, 'mnemonic') and ((r.mnemonic == 'push' and 'rbp' in r.op_str) or (r.mnemonic == 'sub' and 'rsp' in r.op_str)):
+                if hasattr(r, 'mnemonic') and (
+                    (r.mnemonic == 'push' and any(reg in r.op_str for reg in callee_saved))
+                    or (r.mnemonic == 'sub' and 'rsp' in r.op_str)
+                ):
                     check_key_start_tick = r.tick
                     break
 
@@ -260,7 +279,16 @@ def run_crackme_case(test_case):
                 result["native_output"] = str(e)
                 print(f"[-] Native execution error: {e}")
     else:
-        print("[-] Z3 returned UNSAT!")
+        print("[-] Z3 returned UNSAT! Running Detailed Unsat Core Diagnostics...")
+        diagnostics = translator.explain_unsat()
+        if diagnostics:
+            print("\n[+] ===========================================")
+            print("[+] --- [UNSAT CORE CONFLICT DIAGNOSTICS] ---")
+            for diag in diagnostics:
+                print(f"  {diag}")
+            print("[+] ===========================================\n")
+        else:
+            print("[-] No conflicting tracked assertions found (Global unsat).")
 
     return result
 

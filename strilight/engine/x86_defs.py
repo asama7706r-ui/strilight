@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Tuple
 
 INSTRUCTION_META: Dict[str, Dict[str, Any]] = {
     # Data Transfer & Extension
@@ -229,6 +229,35 @@ MODIFIES_ALL_FLAGS: Set[str] = {
 
 MODIFIES_ZSO_ONLY: Set[str] = {
     m for m, meta in INSTRUCTION_META.items() if meta.get('flags_written') == ['flag_zf', 'flag_sf', 'flag_of']
+}
+
+# ==========================================
+# High-Level Relational Operators Map for Jcc
+# ==========================================
+
+JCC_RELATIONAL_OPS: Dict[str, Tuple[str, bool]] = {
+    'je': ('eq', True),
+    'jz': ('eq', True),
+    'jne': ('ne', True),
+    'jnz': ('ne', True),
+    'jl': ('lt', True),
+    'jnge': ('lt', True),
+    'jge': ('ge', True),
+    'jnl': ('ge', True),
+    'jle': ('le', True),
+    'jng': ('le', True),
+    'jg': ('gt', True),
+    'jnle': ('gt', True),
+    'jb': ('lt', True),
+    'jc': ('lt', True),
+    'jnae': ('lt', True),
+    'jae': ('ge', True),
+    'jnb': ('ge', True),
+    'jnc': ('ge', True),
+    'jbe': ('le', True),
+    'jna': ('le', True),
+    'ja': ('gt', True),
+    'jnbe': ('gt', True),
 }
 
 

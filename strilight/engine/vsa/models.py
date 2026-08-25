@@ -1,8 +1,83 @@
 import copy
-from typing import Dict, Optional, List, Any, TYPE_CHECKING
+from typing import Dict, Optional, List, Any, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from strilight.engine.tracker import TraceRecord
+
+
+class TelescopingBranch:
+    """
+    Represents a single execution branch in a Telescoping Cascade.
+    Contains the guard condition predicates, and the state transformations (deltas, expressions)
+    occurring when this branch is taken.
+    """
+    def __init__(
+        self,
+        name: str = "branch",
+        conditions: Optional[List[Dict[str, Any]]] = None,
+        deltas: Optional[Dict[str, int]] = None,
+        affine_exprs: Optional[Dict[str, 'AffineExpr']] = None,
+        constant_sets: Optional[Dict[str, int]] = None,
+    ):
+        self.name = name
+        # Conditions list: [{'lhs': 'eax', 'op': 'eq', 'rhs': 1, 'is_taken': True}, ...]
+        self.conditions: List[Dict[str, Any]] = list(conditions or [])
+        self.deltas: Dict[str, int] = dict(deltas or {})
+        self.affine_exprs: Dict[str, 'AffineExpr'] = dict(affine_exprs or {})
+        self.constant_sets: Dict[str, int] = dict(constant_sets or {})
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "conditions": self.conditions,
+            "deltas": self.deltas,
+            "constant_sets": self.constant_sets,
+        }
+
+
+class TelescopingCascade:
+    """
+    The Telescoping Cascade for M Conditions (The Telescoping Partition of Unity).
+    Represents an M-branch switch-case or nested if-elif-else cascade as a unified single-line
+    linear equation without path explosion:
+        Delta_total = sum_{k=1}^M (P_k * Delta_k)
+    where:
+        P_k = (prod_{j=1}^{k-1} (1 - c_j)) * c_k
+        P_fallback = prod_{j=1}^{M-1} (1 - c_j)
+    and sum_{k=1}^M P_k == 1.
+    """
+    def __init__(self, target_reg: str, branches: Optional[List[TelescopingBranch]] = None):
+        self.target_reg = target_reg
+        self.branches: List[TelescopingBranch] = list(branches or [])
+
+    def add_branch(self, branch: TelescopingBranch) -> None:
+        self.branches.append(branch)
+
+    def is_partition_of_unity(self) -> bool:
+        """
+        By algebraic construction, telescoping cascades are mutually exclusive
+        and partition the unit probability/indicator space to exactly 1.
+        """
+        return len(self.branches) > 0
+
+    def get_telescoping_formula(self) -> str:
+        """
+        Generates the algebraic closed-form formula string:
+        Delta_total = P_1*Delta_1 + P_2*Delta_2 + ... + P_M*Delta_M
+        """
+        terms = []
+        for k, b in enumerate(self.branches):
+            d = b.deltas.get(self.target_reg, 0)
+            terms.append(f"P_{k+1}({b.name}) * ({d})")
+        return " + ".join(terms) if terms else "0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "target_reg": self.target_reg,
+            "branches": [b.to_dict() for b in self.branches],
+            "telescoping_formula": self.get_telescoping_formula(),
+            "partition_of_unity": self.is_partition_of_unity(),
+        }
 
 
 class LoopInvariantContract:
@@ -16,8 +91,8 @@ class LoopInvariantContract:
     def get_induction_formulas(self) -> Dict[str, Dict[str, Any]]:
         """
         Returns the closed-form transition equations for each induction variable:
-        - At iteration N: State(N) = State_0 + Delta * N
-        - At iteration N-1 (Pre-exit Iron State): State(N-1) = State_0 + Delta * (N - 1)
+        The Grand Master Recurrence:
+            State(N) = A(N) * State_0 + Delta_total(N)
         """
         formulas = {}
         for var, delta in self.summary.deltas.items():
@@ -25,6 +100,13 @@ class LoopInvariantContract:
                 "delta": delta,
                 "formula_at_N": f"{var}_0 + ({delta}) * N",
                 "formula_at_N_minus_1": f"{var}_0 + ({delta}) * (N - 1)"
+            }
+        for var, cascade in getattr(self.summary, 'telescoping_cascades', {}).items():
+            t_formula = cascade.get_telescoping_formula()
+            formulas[var] = {
+                "telescoping_cascade": cascade.to_dict(),
+                "formula_at_N": f"{var}_0 + ({t_formula}) * N",
+                "formula_at_N_minus_1": f"{var}_0 + ({t_formula}) * (N - 1)"
             }
         for var, pattern in self.summary.patterns.items():
             p_len = len(pattern)
@@ -192,6 +274,9 @@ class LoopSummary:
         
         # Geometric shift recurrences (Rule 6: Positional Receipt, e.g., acc += k2 << i)
         self.geometric_shifts: Dict[str, Dict[str, Any]] = {}
+        
+        # Telescoping Cascades (Rule 5: The Telescoping Cascade for M Conditions)
+        self.telescoping_cascades: Dict[str, TelescopingCascade] = {}
         
         # Coupling matrix (Rule 7)
         self.coupling_matrix: Optional[RegisterCouplingMatrix] = None

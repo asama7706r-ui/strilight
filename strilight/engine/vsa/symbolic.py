@@ -1,16 +1,67 @@
 import struct
 from typing import List, Dict, Any, Optional
-from strilight.engine.vsa.models import AffineExpr, RegisterCouplingMatrix, LoopSummary
+from strilight.engine.vsa.models import (
+    AffineExpr,
+    RegisterCouplingMatrix,
+    LoopSummary,
+    TelescopingBranch,
+    TelescopingCascade,
+)
 from strilight.engine.vsa.state_ops import get_operand_list
-from strilight.engine.x86_defs import REG_TO_BASE
+from strilight.engine.x86_defs import REG_TO_BASE, JCC_RELATIONAL_OPS
 
 
 class SymbolicInductionAnalyzer:
     """
     Analyzes a loop body symbolically in a single pass (Zero-Spinning O(1)).
     Extracts affine strides, register coupling matrices, geometric shifts,
-    and table pattern scaling.
+    telescoping cascades, and table pattern scaling.
     """
+
+    @classmethod
+    def extract_internal_branches(cls, body: List[Any]) -> List[Dict[str, Any]]:
+        """
+        Discovers internal condition checks (cmp/test + jcc) inside the loop body
+        to formulate telescoping branches.
+        """
+        branches = []
+        pending_cmp = None
+
+        for record in body:
+            if hasattr(record, 'body'):
+                continue
+            mnemonic = getattr(record, 'mnemonic', '').lower()
+            operands = get_operand_list(record)
+
+            if mnemonic in ('cmp', 'test'):
+                if len(operands) >= 2:
+                    lhs = operands[0].get('value')
+                    rhs = operands[1].get('value')
+                    op_type = 'and_nonzero' if mnemonic == 'test' else 'eq'
+                    pending_cmp = {
+                        'lhs': lhs,
+                        'rhs': rhs,
+                        'raw_op': op_type,
+                        'record': record
+                    }
+            elif mnemonic.startswith('j') and mnemonic != 'jmp' and pending_cmp:
+                op_name, is_taken = JCC_RELATIONAL_OPS.get(mnemonic, ('eq', True))
+                if pending_cmp.get('raw_op') == 'and_nonzero':
+                    op_name = 'and_nonzero'
+
+                branches.append({
+                    'condition': {
+                        'lhs': pending_cmp['lhs'],
+                        'op': op_name,
+                        'rhs': pending_cmp['rhs'],
+                        'is_taken': is_taken
+                    },
+                    'jump_record': record,
+                    'cmp_record': pending_cmp['record']
+                })
+                pending_cmp = None
+
+        return branches
 
     @classmethod
     def evaluate_symbolic_pass(
@@ -21,7 +72,7 @@ class SymbolicInductionAnalyzer:
     ) -> bool:
         """
         Executes a single symbolic pass over the loop body to extract affine deltas,
-        register coupling matrix, geometric shifts, and compound table multipliers without spinning.
+        register coupling matrix, geometric shifts, telescoping cascades, and compound table multipliers.
         """
         env: Dict[str, AffineExpr] = {}
         reg_origins: Dict[str, str] = {}
@@ -176,4 +227,9 @@ class SymbolicInductionAnalyzer:
         summary.geometric_shifts = {r: g for r, g in summary.geometric_shifts.items() if r in read_first_regs}
 
         summary.coupling_matrix = matrix
-        return len(summary.deltas) > 0 or len(summary.geometric_shifts) > 0 or len(summary.patterns) > 0
+        return (
+            len(summary.deltas) > 0
+            or len(summary.geometric_shifts) > 0
+            or len(summary.patterns) > 0
+            or len(summary.telescoping_cascades) > 0
+        )

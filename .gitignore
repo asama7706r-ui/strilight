@@ -2,12 +2,12 @@ venv/
 __pycache__/
 *.pyc
 *.exe
+!strilight/tests/benchmarks/CrackMeFile/*.exe
 *.obj
 *.pdb
 *.ilk
 *.pyd
 *.so
-*.c
 build/
 dist/
 *.egg-info/

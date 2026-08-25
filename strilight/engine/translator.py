@@ -1076,24 +1076,21 @@ class Z3Translator:
             
         shadow_subs = []
         composed_inner_deltas = {}
+        N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
         
-        # 3.1. Process Child Inner Loops Symbolically
+        # 3. Process Child Inner Loops Symbolically
         inner_summaries = getattr(summary, 'inner_summaries', [])
-        if inner_summaries:
-            logger.debug("Found %d Symbolic Child Inner Loop(s)!", len(inner_summaries))
-            for inner_sum in inner_summaries:
-                inner_tick = getattr(inner_sum, 'tick', None)
-                if inner_tick is not None:
-                    inner_var_name = f'LoopCounter_t{inner_tick}'
-                else:
-                    inner_var_name = self._get_new_ssa_name('LoopCounter')
-                    
+        composed_inner_deltas = {}
+        for inner_sum in inner_summaries:
+            inner_tick = getattr(inner_sum, 'tick', None)
+            if inner_tick is not None:
+                inner_var_name = f'LoopCounter_t{inner_tick}'
                 N_inner = z3.BitVec(inner_var_name, 64)
                 inner_sum.loop_counter_var = N_inner
-                self.solver.add(z3.UGE(N_inner, 0))
-                self.solver.add(z3.ULE(N_inner, 10000000))
-                
-                # Apply inner delta to inner control variables (like loop counters)
+                self.add_tracked_constraint(z3.And(z3.UGE(N_inner, 0), z3.ULE(N_inner, 10000000)), f"Inner Loop Bound (t{inner_tick})")
+                if hasattr(self.solver, 'minimize'):
+                    self.solver.minimize(N_inner)
+                    
                 inner_shadow_subs = []
                 for reg_name, delta in getattr(inner_sum, 'deltas', {}).items():
                     if reg_name.startswith("MEM_"):
@@ -1101,7 +1098,6 @@ class Z3Translator:
                         addr = int(parts[1])
                         size_bits = int(parts[2])
                         mem_op = {'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}
-                        # Induction variable for an inner loop within an outer loop body starts at 0 at each outer loop iteration
                         t_before = z3.BitVecVal(0, 64)
                         t_after = t_before + delta * N_inner if delta != 0 else t_before
                         t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
@@ -1115,16 +1111,17 @@ class Z3Translator:
                         self._clobber_register(base_reg)
                         t_after = self._get_phys_reg(base_reg)
                         if delta != 0:
-                            self.solver.add(t_after == t_before + delta * N_inner)
+                            self.add_tracked_constraint(t_after == t_before + delta * N_inner, f"Inner Stride {reg_name} (t{inner_tick})")
                         else:
-                            self.solver.add(t_after == t_before)
+                            self.add_tracked_constraint(t_after == t_before, f"Inner Identity {reg_name} (t{inner_tick})")
                         t_after_shadow = z3.If(N_inner > 0, t_before + delta * (N_inner - 1), t_before)
                         t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
                         inner_shadow_subs.append((t_after, t_after_shadow_extracted))
                         
                 # Extract inner polycyclic pattern expressions for data flow
                 for reg_name, pattern in getattr(inner_sum, 'patterns', {}).items():
-                    d_expr = _build_polycyclic_delta(N_inner, pattern, 64)
+                    from strilight.engine.vsa import LoopSMTTranslator
+                    d_expr = LoopSMTTranslator.build_polycyclic_delta_ast(N_inner, pattern, 64)
                     composed_inner_deltas[reg_name] = d_expr
                     logger.debug("Built Symbolic Inner Closed-Form Pattern for %s (Period P=%d)", reg_name, len(pattern))
                     
@@ -1147,206 +1144,78 @@ class Z3Translator:
                         self.add_tracked_constraint(z3.Implies(N_inner > 0, iron_c), f"Inner Loop Exit Iron Constraint (t{inner_tick})")
                         logger.debug("Inner Loop Exit Iron Constraint successfully injected for N_inner=%s!", N_inner)
 
-        # 4. Apply Scalar Strides: Reg_new = Reg_old + Delta * N
-        logger.debug("Loop Summary Deltas: %s", summary.deltas)
-        seen_delta_bases = set()
-        for reg_name, delta in summary.deltas.items():
-            if not reg_name.startswith("MEM_"):
-                base_reg = self._reg_to_base.get(reg_name, reg_name)
-                if base_reg in seen_delta_bases:
-                    continue
-                seen_delta_bases.add(base_reg)
+        # 4. Delegate all mathematical formulas to LoopSMTTranslator (Decoupled SMT-LIB2 Engine)
+        from strilight.engine.vsa import LoopSMTTranslator
 
-            if reg_name in composed_inner_deltas:
-                step_delta = composed_inner_deltas[reg_name]
-                if reg_name.startswith("MEM_"):
-                    parts = reg_name.split("_")
-                    addr = int(parts[1])
-                    size_bits = int(parts[2])
-                    t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
-                    if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
-                    t_after = t_before + step_delta * N
-                    
-                    t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
-                    self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
-                    
-                    t_after_shadow = z3.If(N > 0, t_before + step_delta * (N - 1), t_before)
-                    t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
-                    shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
-                    continue
-                    
-                base_reg = self._reg_to_base.get(reg_name, reg_name)
-                t_before = self._get_phys_reg(base_reg)
-                self._clobber_register(base_reg)
-                t_after = self._get_phys_reg(base_reg)
-                self.solver.add(t_after == t_before + step_delta * N)
-                t_after_shadow = z3.If(N > 0, t_before + step_delta * (N - 1), t_before)
-                t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
-                shadow_subs.append((t_after, t_after_shadow_extracted))
+        def _resolve_val_to_ast(val):
+            if isinstance(val, int):
+                return z3.BitVecVal(val, 64)
+            elif isinstance(val, str):
+                if val.isdigit() or (val.startswith('-') and val[1:].isdigit()):
+                    return z3.BitVecVal(int(val), 64)
+                elif val.startswith('0x') or val.startswith('-0x'):
+                    return z3.BitVecVal(int(val, 16), 64)
+                else:
+                    base_r = self._reg_to_base.get(val, val)
+                    ast = self._get_phys_reg(base_r)
+                    if ast.size() != 64:
+                        ast = z3.ZeroExt(64 - ast.size(), ast)
+                    return ast
+            elif isinstance(val, (z3.BitVecRef, z3.ExprRef)):
+                if val.size() != 64:
+                    return z3.ZeroExt(64 - val.size(), val)
+                return val
+            return None
+
+        smt_updates = LoopSMTTranslator.translate_loop_summary_to_smt_updates(
+            summary=summary,
+            N_ast=N,
+            N_prev_ast=N_prev,
+            get_phys_reg_fn=lambda r: self._get_phys_reg(self._reg_to_base.get(r, r)),
+            resolve_val_fn=_resolve_val_to_ast,
+            composed_inner_deltas=composed_inner_deltas,
+        )
+
+        # 5. Apply SMT Updates to SSA Timeline and Machine State
+        for upd in smt_updates:
+            if upd.constant_val is not None:
+                if upd.is_mem:
+                    mem_op = {'type': 'mem', 'disp': upd.mem_addr, 'base': None, 'index': None, 'scale': 1, 'size': upd.mem_size_bits // 8}
+                    self._write_operand(mem_op, z3.BitVecVal(upd.constant_val, upd.mem_size_bits))
+                else:
+                    base_reg = self._reg_to_base.get(upd.name, upd.name)
+                    self._clobber_register(base_reg)
+                    new_reg = self._get_phys_reg(base_reg)
+                    self.add_tracked_constraint(new_reg == upd.constant_val, f"Loop Const Set {upd.name} = {upd.constant_val} (t{loop_tick})")
                 continue
-                
-            direct_delta = summary.direct_deltas.get(reg_name, delta)
-            if reg_name.startswith("MEM_"):
-                parts = reg_name.split("_")
-                addr = int(parts[1])
-                size_bits = int(parts[2])
-                t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
-                if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
-                t_after = t_before + direct_delta * N if direct_delta != 0 else t_before
-                
-                t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
-                self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
-                
-                t_after_shadow = z3.If(N > 0, t_before + direct_delta * (N - 1), t_before)
-                t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
-                shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
-                continue
-                
-            base_reg = self._reg_to_base.get(reg_name, reg_name)
-            t_before = self._get_phys_reg(base_reg)
-            
-            # Clobber and assert Loop Equation
-            self._clobber_register(base_reg)
-            t_after = self._get_phys_reg(base_reg)
-            
-            if direct_delta != 0:
-                self.solver.add(t_after == t_before + direct_delta * N)
-            else:
-                self.solver.add(t_after == t_before)
-                
-            t_after_shadow = z3.If(N > 0, t_before + direct_delta * (N - 1), t_before)
-            t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
-            shadow_subs.append((t_after, t_after_shadow_extracted))
 
-        # 5. Apply Polycyclic Patterns (Closed-Form Formula: Total = Q * Sum + Remainder_Prefix[R])
-        patterns = getattr(summary, 'patterns', {})
-        pattern_scales = getattr(summary, 'pattern_scales', {})
-        if patterns:
-            logger.debug("Loop Summary Polycyclic Patterns: %s", patterns)
-            N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
-            for reg_name, pattern in patterns.items():
-                if reg_name in composed_inner_deltas:
-                    continue
-                scale_var = pattern_scales.get(reg_name)
-                if scale_var:
-                    scale_base = self._reg_to_base.get(scale_var, scale_var)
-                    scale_ast = self._get_phys_reg(scale_base)
-                    total_delta = _build_polycyclic_delta(N, pattern, 64) * scale_ast
-                    total_delta_prev = _build_polycyclic_delta(N_prev, pattern, 64) * scale_ast
-                else:
-                    total_delta = _build_polycyclic_delta(N, pattern, 64)
-                    total_delta_prev = _build_polycyclic_delta(N_prev, pattern, 64)
-                
-                if reg_name.startswith("MEM_"):
-                    parts = reg_name.split("_")
-                    addr = int(parts[1])
-                    size_bits = int(parts[2])
-                    t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
-                    if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
-                    t_after = t_before + total_delta
-                    
-                    t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
-                    self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
-                    
-                    t_after_shadow = z3.If(N > 0, t_before + total_delta_prev, t_before)
-                    t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
-                    shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
-                    continue
-                    
-                base_reg = self._reg_to_base.get(reg_name, reg_name)
-                t_before = self._get_phys_reg(base_reg)
-                
-                self._clobber_register(base_reg)
-                t_after = self._get_phys_reg(base_reg)
-                
-                self.solver.add(t_after == t_before + total_delta)
-                
-                t_after_shadow = z3.If(N > 0, t_before + total_delta_prev, t_before)
-                t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
-                shadow_subs.append((t_after, t_after_shadow_extracted))
+            if upd.delta_ast is not None:
+                scale_n = upd.scale_ast if getattr(upd, 'scale_ast', None) is not None else z3.BitVecVal(1, 64)
+                scale_prev = upd.scale_prev_ast if getattr(upd, 'scale_prev_ast', None) is not None else z3.BitVecVal(1, 64)
 
-        # 5.1. Apply Geometric Shift Recurrences (Rule 6 - Positional Receipt: Sum_{i=0}^{N-1} 2^i * var = (2^N - 1) * var)
-        geometric_shifts = getattr(summary, 'geometric_shifts', {})
-        if geometric_shifts:
-            logger.debug("Loop Summary Geometric Shifts: %s", geometric_shifts)
-            N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
-            for reg_name, shift_info in geometric_shifts.items():
-                scale_base = shift_info.get('base', 2)
-                src_var_name = shift_info.get('var', None)
-                src_val_imm = shift_info.get('val', 1)
-                modulo_bits = shift_info.get('modulo_bits', 0)
-                
-                # Formula: ((1 << N) - 1) * src_val (Safe 64-bit bounds or 32-bit modulo shifts)
-                if modulo_bits == 32:
-                    loop_n = getattr(summary, 'iterations', 0)
-                    if isinstance(loop_n, int) and loop_n > 0:
-                        shift_coeff = sum(1 << (i & 31) for i in range(loop_n)) & 0xFFFFFFFF
-                        geom_factor = z3.BitVecVal(shift_coeff, 64)
-                        shift_coeff_prev = sum(1 << (i & 31) for i in range(max(0, loop_n - 1))) & 0xFFFFFFFF
-                        geom_factor_prev = z3.BitVecVal(shift_coeff_prev, 64)
-                    else:
-                        full_cycles = z3.UDiv(N, 32)
-                        rem = z3.URem(N, 32)
-                        geom_factor = (full_cycles * z3.BitVecVal(0xFFFFFFFF, 64)) + ((z3.BitVecVal(1, 64) << rem) - 1)
-                        full_cycles_prev = z3.UDiv(N_prev, 32)
-                        rem_prev = z3.URem(N_prev, 32)
-                        geom_factor_prev = (full_cycles_prev * z3.BitVecVal(0xFFFFFFFF, 64)) + ((z3.BitVecVal(1, 64) << rem_prev) - 1)
-                elif scale_base == 2:
-                    geom_factor = z3.If(z3.UGE(N, 64), z3.BitVecVal(0xFFFFFFFFFFFFFFFF, 64), (z3.BitVecVal(1, 64) << N) - 1)
-                    geom_factor_prev = z3.If(z3.UGE(N_prev, 64), z3.BitVecVal(0xFFFFFFFFFFFFFFFF, 64), (z3.BitVecVal(1, 64) << N_prev) - 1)
-                else:
-                    geom_factor = (z3.BitVecVal(scale_base, 64) ** N) - 1
-                    geom_factor_prev = (z3.BitVecVal(scale_base, 64) ** N_prev) - 1
+                if upd.is_mem:
+                    mem_op = {'type': 'mem', 'disp': upd.mem_addr, 'base': None, 'index': None, 'scale': 1, 'size': upd.mem_size_bits // 8}
+                    t_before, _ = self._read_operand(mem_op)
+                    if t_before.size() != 64:
+                        t_before = z3.ZeroExt(64 - t_before.size(), t_before)
+                    t_after = (scale_n * t_before) + upd.delta_ast
+                    t_after_extracted = z3.Extract(upd.mem_size_bits - 1, 0, t_after)
+                    self._write_operand(mem_op, t_after_extracted)
 
-                if src_var_name:
-                    src_base = self._reg_to_base.get(src_var_name, src_var_name)
-                    src_ast = self._get_phys_reg(src_base)
-                    total_geom_delta = geom_factor * src_ast
-                    total_geom_delta_prev = geom_factor_prev * src_ast
-                else:
-                    total_geom_delta = geom_factor * z3.BitVecVal(src_val_imm, 64)
-                    total_geom_delta_prev = geom_factor_prev * z3.BitVecVal(src_val_imm, 64)
-                
-                if reg_name.startswith("MEM_"):
-                    parts = reg_name.split("_")
-                    addr = int(parts[1])
-                    size_bits = int(parts[2])
-                    t_before, _ = self._read_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8})
-                    if t_before.size() != 64: t_before = z3.ZeroExt(64 - t_before.size(), t_before)
-                    t_after = t_before + total_geom_delta
-                    t_after_extracted = z3.Extract(size_bits - 1, 0, t_after)
-                    self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, t_after_extracted)
-                    
-                    t_after_shadow = z3.If(N > 0, t_before + total_geom_delta_prev, t_before)
-                    t_after_shadow_extracted = z3.Extract(size_bits - 1, 0, t_after_shadow)
+                    t_after_shadow = z3.If(N > 0, (scale_prev * t_before) + upd.delta_prev_ast, t_before)
+                    t_after_shadow_extracted = z3.Extract(upd.mem_size_bits - 1, 0, t_after_shadow)
                     shadow_subs.append((t_after_extracted, t_after_shadow_extracted))
                 else:
-                    base_reg = self._reg_to_base.get(reg_name, reg_name)
+                    base_reg = self._reg_to_base.get(upd.name, upd.name)
                     t_before = self._get_phys_reg(base_reg)
                     self._clobber_register(base_reg)
                     t_after = self._get_phys_reg(base_reg)
-                    self.solver.add(t_after == t_before + total_geom_delta)
-                    
-                    t_after_shadow = z3.If(N > 0, t_before + total_geom_delta_prev, t_before)
+                    self.add_tracked_constraint(t_after == (scale_n * t_before) + upd.delta_ast, f"Loop Master Update {upd.name} (t{loop_tick})")
+
+                    t_after_shadow = z3.If(N > 0, (scale_prev * t_before) + upd.delta_prev_ast, t_before)
                     t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
                     shadow_subs.append((t_after, t_after_shadow_extracted))
 
-        # 6. Handle Constant Sets from Loop body
-        logger.debug("Loop Summary Constant Sets: %s", summary.constant_sets)
-        for reg_name, const_val in summary.constant_sets.items():
-            if reg_name.startswith("MEM_"):
-                parts = reg_name.split("_")
-                addr = int(parts[1])
-                size_bits = int(parts[2])
-                const_ast = z3.BitVecVal(const_val, size_bits)
-                self._write_operand({'type': 'mem', 'disp': addr, 'base': None, 'index': None, 'scale': 1, 'size': size_bits // 8}, const_ast)
-                continue
-                
-            base_reg = self._reg_to_base.get(reg_name, reg_name)
-            self._clobber_register(base_reg)
-            new_reg = self._get_phys_reg(base_reg)
-            self.solver.add(new_reg == const_val)
-            
         # Restore current_instr
         self.current_instr = old_instr
             
