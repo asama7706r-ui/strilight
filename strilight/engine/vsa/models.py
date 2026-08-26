@@ -602,6 +602,36 @@ class AutoSyncDict(dict):
                 self.on_change_callback(k, None)
 
 
+class LoopExitGuard:
+    """
+    Formal mathematical representation of a Loop Exit Guard condition:
+        LHS(N) <OP> RHS(N)
+    """
+    def __init__(
+        self,
+        lhs: Any,
+        rhs: Any,
+        jcc: str,
+        is_exit_on_true: bool = True,
+        slice_records: Optional[List[Any]] = None,
+        exit_jmp: Optional[Any] = None,
+    ):
+        self.lhs = lhs
+        self.rhs = rhs
+        self.jcc = (jcc or "").lower().strip()
+        self.is_exit_on_true = is_exit_on_true
+        self.slice_records = slice_records or []
+        self.exit_jmp = exit_jmp
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "lhs": self.lhs,
+            "rhs": self.rhs,
+            "jcc": self.jcc,
+            "is_exit_on_true": self.is_exit_on_true,
+        }
+
+
 class LoopSummary:
     """
     Symbolic mathematical summary of a loop's effect.
@@ -623,6 +653,7 @@ class LoopSummary:
         self.coupling_matrix: Optional[RegisterCouplingMatrix] = None
         self.exit_condition: Optional[str] = None
         self.exit_records: List['TraceRecord'] = []
+        self.exit_guard: Optional[LoopExitGuard] = None
         self.iterations: int = 0
         self.inner_summaries: List['LoopSummary'] = []
         self.direct_deltas: Dict[str, int] = {}

@@ -352,3 +352,145 @@ class LoopSMTTranslator:
                 ))
 
         return updates
+
+    @classmethod
+    def build_loop_exit_constraints(
+        cls,
+        summary: LoopSummary,
+        N_ast: z3.BitVecRef,
+        N_prev_ast: z3.BitVecRef,
+        resolve_val_fn: Callable[[Any], Optional[z3.BitVecRef]],
+        get_phys_reg_fn: Optional[Callable[[str], z3.BitVecRef]] = None,
+    ) -> List[Tuple[z3.BoolRef, str]]:
+        """
+        Builds the closed-form SMT AST constraints for Loop Termination and Continuation Guards.
+            Exit Constraint (At Step N):        Guard(X(N)) == Exit Condition
+            Continuation Guard (At Step N-1):   Guard(X(N-1)) == Continue Condition (Implies N > 0)
+        Evaluates directly in O(1) through Universal Expression Tree ASTs without instruction replay.
+        """
+        lhs = None
+        rhs = None
+        jcc = "je"
+        is_exit_on_true = True
+
+        if getattr(summary, 'exit_guard', None) is not None:
+            guard = summary.exit_guard
+            lhs = guard.lhs
+            rhs = guard.rhs
+            jcc = guard.jcc
+            is_exit_on_true = guard.is_exit_on_true
+        elif getattr(summary, 'exit_records', None):
+            # Fallback heuristic extraction from raw exit records
+            last_jcc = None
+            cmp_record = None
+            for r in reversed(summary.exit_records):
+                if last_jcc is None and hasattr(r, 'mnemonic') and r.mnemonic.startswith('j') and r.mnemonic != 'jmp':
+                    last_jcc = r
+                elif last_jcc is not None and hasattr(r, 'mnemonic') and r.mnemonic in ('cmp', 'test', 'sub'):
+                    cmp_record = r
+                    break
+
+            if last_jcc is not None and cmp_record is not None and getattr(cmp_record, 'operands', None):
+                ops = cmp_record.operands
+                if len(ops) >= 2:
+                    lhs = ops[0].get('value') if ops[0].get('type') == 'reg' else ops[0]
+                    rhs = ops[1].get('value') if ops[1].get('type') in ('reg', 'imm') else ops[1]
+                elif len(ops) == 1:
+                    lhs = ops[0].get('value') if ops[0].get('type') == 'reg' else ops[0]
+                    rhs = 0
+                jcc = last_jcc.mnemonic
+                is_exit_on_true = getattr(last_jcc, 'jump_taken', True)
+                if is_exit_on_true is None:
+                    is_exit_on_true = True
+
+        if lhs is None or rhs is None:
+            return []
+
+        def eval_target_at_step(target: Any) -> Tuple[Optional[z3.BitVecRef], Optional[z3.BitVecRef]]:
+            if isinstance(target, str):
+                base_var = target.lower().strip()
+                matched_expr = None
+                if base_var in summary.register_exprs:
+                    matched_expr = summary.register_exprs[base_var]
+                else:
+                    for k, expr in summary.register_exprs.items():
+                        if REG_TO_BASE.get(k, k) == REG_TO_BASE.get(base_var, base_var):
+                            matched_expr = expr
+                            break
+
+                base_val = resolve_val_fn(base_var)
+                if base_val is None:
+                    base_val = z3.BitVecVal(0, 64)
+
+                if matched_expr is not None and matched_expr.constant_val is None:
+                    scale_n, scale_prev, delta_n, delta_prev = matched_expr.to_smt(
+                        N_ast=N_ast,
+                        N_prev_ast=N_prev_ast,
+                        resolve_val_fn=resolve_val_fn,
+                        bit_size=base_val.size() if hasattr(base_val, 'size') else 64
+                    )
+                    val_at_N = (scale_n * base_val) + delta_n
+                    val_at_prev = z3.If(N_ast > 0, (scale_prev * base_val) + delta_prev, base_val)
+                    return val_at_N, val_at_prev
+                else:
+                    return base_val, base_val
+            else:
+                val = resolve_val_fn(target)
+                return val, val
+
+        lhs_N, lhs_prev = eval_target_at_step(lhs)
+        rhs_N, rhs_prev = eval_target_at_step(rhs)
+
+        if lhs_N is None or rhs_N is None:
+            return []
+
+        # Normalize bit sizes
+        max_sz = max(lhs_N.size(), rhs_N.size())
+        if lhs_N.size() < max_sz:
+            lhs_N = z3.ZeroExt(max_sz - lhs_N.size(), lhs_N)
+        if rhs_N.size() < max_sz:
+            rhs_N = z3.ZeroExt(max_sz - rhs_N.size(), rhs_N)
+
+        if lhs_prev is not None and lhs_prev.size() < max_sz:
+            lhs_prev = z3.ZeroExt(max_sz - lhs_prev.size(), lhs_prev)
+        if rhs_prev is not None and rhs_prev.size() < max_sz:
+            rhs_prev = z3.ZeroExt(max_sz - rhs_prev.size(), rhs_prev)
+
+        def _build_cond_pred(l: z3.BitVecRef, r: z3.BitVecRef, op_mnemonic: str) -> z3.BoolRef:
+            op_m = op_mnemonic.lower().strip()
+            if op_m in ('je', 'jz', 'eq'):
+                return l == r
+            elif op_m in ('jne', 'jnz', 'ne'):
+                return l != r
+            elif op_m in ('ja', 'jnbe', 'ugt'):
+                return z3.UGT(l, r)
+            elif op_m in ('jae', 'jnb', 'jnc', 'uge'):
+                return z3.UGE(l, r)
+            elif op_m in ('jb', 'jc', 'jnae', 'ult'):
+                return z3.ULT(l, r)
+            elif op_m in ('jbe', 'jna', 'ule'):
+                return z3.ULE(l, r)
+            elif op_m in ('jg', 'jnle', 'gt'):
+                return l > r
+            elif op_m in ('jge', 'jnl', 'ge'):
+                return l >= r
+            elif op_m in ('jl', 'jnge', 'lt'):
+                return l < r
+            elif op_m in ('jle', 'jng', 'le'):
+                return l <= r
+            return l == r
+
+        cond_N = _build_cond_pred(lhs_N, rhs_N, jcc)
+        cond_prev = _build_cond_pred(lhs_prev, rhs_prev, jcc)
+
+        if is_exit_on_true:
+            exit_constraint = cond_N
+            continue_guard = z3.Not(cond_prev)
+        else:
+            exit_constraint = z3.Not(cond_N)
+            continue_guard = cond_prev
+
+        return [
+            (z3.simplify(exit_constraint), "Loop Exit Exact Bound (Step N)"),
+            (z3.simplify(z3.Implies(N_ast > 0, continue_guard)), "Loop Exit Continuation Guard (Step N-1)"),
+        ]
