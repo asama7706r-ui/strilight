@@ -254,36 +254,20 @@ class LoopSMTTranslator:
         Translates all components of a LoopSummary into canonical SMT AST state updates
         following the Grand Master Recurrence Equation:
             X(N) = A(N) * X_0 + Delta_total(N)
-        Evaluates directly through Universal Loop Expression Trees (register_exprs).
+        Evaluates directly through Universal Loop Expression Trees (register_exprs) in O(1).
         """
         to_base = reg_to_base_fn or (lambda r: REG_TO_BASE.get(r, r))
         composed_inner = composed_inner_deltas or {}
 
-        # Helper to parse MEM_address_bits keys
         def parse_mem_key(key: str) -> Tuple[bool, Optional[int], int]:
             if key.startswith("MEM_"):
                 parts = key.split("_")
                 return True, int(parts[1]), int(parts[2])
             return False, None, 64
 
-        # Track all active destinations
-        target_keys: Set[str] = set()
-        for k in summary.register_exprs:
-            target_keys.add(k)
-        for k in getattr(summary, 'deltas', {}):
-            target_keys.add(k)
-        for k in getattr(summary, 'patterns', {}):
-            target_keys.add(k)
-        for k in getattr(summary, 'geometric_shifts', {}):
-            target_keys.add(k)
-        for k in getattr(summary, 'telescoping_cascades', {}):
-            target_keys.add(k)
-        for k in getattr(summary, 'constant_sets', {}):
-            target_keys.add(k)
-        for k in composed_inner:
-            target_keys.add(k)
+        # 1. Collect all canonical targets from the Universal AST and composed inner loops
+        target_keys: Set[str] = set(summary.register_exprs.keys()) | set(composed_inner.keys())
 
-        # Canonical destination mapping
         canonical_targets: Dict[str, Set[str]] = {}
         for raw_k in target_keys:
             is_mem, _, _ = parse_mem_key(raw_k)
@@ -294,10 +278,11 @@ class LoopSMTTranslator:
 
         updates: List[LoopStateUpdate] = []
 
+        # 2. Evaluate Grand Master Recurrence for each target
         for dest_key, raw_aliases in canonical_targets.items():
             is_mem, mem_addr, mem_sz = parse_mem_key(dest_key)
 
-            # Check if any alias has a composed inner loop delta
+            # Check if this target is driven by a child inner loop
             has_composed_inner = False
             inner_step_delta = None
             for alias in raw_aliases:
@@ -315,13 +300,11 @@ class LoopSMTTranslator:
 
                 total_delta_n = (inner_step_delta + direct_d) * N_ast
                 total_delta_prev = (inner_step_delta + direct_d) * N_prev_ast
-                scale_n = z3.BitVecVal(1, 64)
-                scale_prev = z3.BitVecVal(1, 64)
 
                 updates.append(LoopStateUpdate(
                     name=dest_key,
-                    scale_ast=z3.simplify(scale_n),
-                    scale_prev_ast=z3.simplify(scale_prev),
+                    scale_ast=z3.BitVecVal(1, 64),
+                    scale_prev_ast=z3.BitVecVal(1, 64),
                     delta_ast=z3.simplify(total_delta_n),
                     delta_prev_ast=z3.simplify(total_delta_prev),
                     is_mem=is_mem,
@@ -330,7 +313,7 @@ class LoopSMTTranslator:
                 ))
                 continue
 
-            # Check if this target is directly represented by a RegisterLoopExpr
+            # Retrieve the matched Universal AST Expression
             matched_expr: Optional[RegisterLoopExpr] = None
             for alias in raw_aliases:
                 if alias in summary.register_exprs:
@@ -338,9 +321,7 @@ class LoopSMTTranslator:
                     break
 
             if matched_expr is not None:
-                # -------------------------------------------------------------
-                # Pure Universal AST Evaluation: O(1) Zero Double-Counting
-                # -------------------------------------------------------------
+                # Constant Definition
                 if matched_expr.constant_val is not None:
                     updates.append(LoopStateUpdate(
                         name=dest_key,
@@ -351,6 +332,7 @@ class LoopSMTTranslator:
                     ))
                     continue
 
+                # Recurrence Equation Evaluation via AST
                 scale_n, scale_prev, total_delta_n, total_delta_prev = matched_expr.to_smt(
                     N_ast=N_ast,
                     N_prev_ast=N_prev_ast,
@@ -368,47 +350,5 @@ class LoopSMTTranslator:
                     mem_addr=mem_addr,
                     mem_size_bits=mem_sz,
                 ))
-                continue
-
-            # Fallback legacy calculation if no RegisterLoopExpr was found
-            const_val = None
-            for alias in raw_aliases:
-                if alias in getattr(summary, 'constant_sets', {}):
-                    const_val = summary.constant_sets[alias]
-                    break
-
-            if const_val is not None:
-                updates.append(LoopStateUpdate(
-                    name=dest_key,
-                    constant_val=const_val,
-                    is_mem=is_mem,
-                    mem_addr=mem_addr,
-                    mem_size_bits=mem_sz,
-                ))
-                continue
-
-            scale_n = z3.BitVecVal(1, 64)
-            scale_prev = z3.BitVecVal(1, 64)
-            total_delta_n = z3.BitVecVal(0, 64)
-            total_delta_prev = z3.BitVecVal(0, 64)
-
-            for alias in raw_aliases:
-                if alias in getattr(summary, 'deltas', {}):
-                    direct_delta = getattr(summary, 'direct_deltas', {}).get(alias, summary.deltas[alias])
-                    if direct_delta != 0:
-                        total_delta_n = total_delta_n + (z3.BitVecVal(direct_delta, 64) * N_ast)
-                        total_delta_prev = total_delta_prev + (z3.BitVecVal(direct_delta, 64) * N_prev_ast)
-                    break
-
-            updates.append(LoopStateUpdate(
-                name=dest_key,
-                scale_ast=z3.simplify(scale_n),
-                scale_prev_ast=z3.simplify(scale_prev),
-                delta_ast=z3.simplify(total_delta_n),
-                delta_prev_ast=z3.simplify(total_delta_prev),
-                is_mem=is_mem,
-                mem_addr=mem_addr,
-                mem_size_bits=mem_sz,
-            ))
 
         return updates
