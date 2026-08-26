@@ -1,11 +1,21 @@
 import struct
-from typing import List, Dict, Any, Optional
+import copy
+from typing import List, Dict, Any, Optional, Set
 from strilight.engine.vsa.models import (
     AffineExpr,
     RegisterCouplingMatrix,
     LoopSummary,
     TelescopingBranch,
     TelescopingCascade,
+    LoopTerm,
+    LinearTerm,
+    PeriodicTerm,
+    GeometricTerm,
+    TelescopingTerm,
+    RegisterLoopExpr,
+    ScaleKernel,
+    IdentityScale,
+    PowerScale,
 )
 from strilight.engine.vsa.state_ops import get_operand_list
 from strilight.engine.x86_defs import REG_TO_BASE, JCC_RELATIONAL_OPS
@@ -14,7 +24,8 @@ from strilight.engine.x86_defs import REG_TO_BASE, JCC_RELATIONAL_OPS
 class SymbolicInductionAnalyzer:
     """
     Analyzes a loop body symbolically in a single pass (Zero-Spinning O(1)).
-    Extracts affine strides, register coupling matrices, geometric shifts,
+    Builds the Universal Symbolic Loop Expression AST (RegisterLoopExpr) directly
+    for affine strides, register coupling matrices, geometric shifts,
     telescoping cascades, and table pattern scaling.
     """
 
@@ -71,13 +82,13 @@ class SymbolicInductionAnalyzer:
         memory_provider: Optional[Any] = None
     ) -> bool:
         """
-        Executes a single symbolic pass over the loop body to extract affine deltas,
-        register coupling matrix, geometric shifts, telescoping cascades, and compound table multipliers.
+        Executes a single symbolic pass over the loop body to construct the Universal
+        Symbolic Loop Expression AST (register_exprs), coupling matrix, geometric shifts,
+        and telescoping cascades.
         """
         env: Dict[str, AffineExpr] = {}
+        ast_env: Dict[str, RegisterLoopExpr] = {}
         reg_origins: Dict[str, str] = {}
-        shift_exprs: Dict[str, Dict[str, Any]] = {}
-        table_exprs: Dict[str, Dict[str, Any]] = {}
 
         all_regs = set()
         for record in body:
@@ -91,6 +102,7 @@ class SymbolicInductionAnalyzer:
 
         for r in all_regs:
             env[r] = AffineExpr.from_reg(r)
+            ast_env[r] = RegisterLoopExpr(r)
             reg_origins[r] = r
 
         for record in body:
@@ -104,7 +116,7 @@ class SymbolicInductionAnalyzer:
             dest_op = operands[0] if len(operands) > 0 else None
             src_op = operands[1] if len(operands) > 1 else None
 
-            def get_expr(op):
+            def get_affine_expr(op):
                 if op['type'] == 'imm':
                     return AffineExpr.from_const(op['value'])
                 elif op['type'] == 'reg':
@@ -117,10 +129,9 @@ class SymbolicInductionAnalyzer:
                     if src_op and src_op['type'] == 'reg':
                         src_reg = src_op['value']
                         reg_origins[dest_reg] = reg_origins.get(src_reg, src_reg)
-                        if src_reg in table_exprs:
-                            table_exprs[dest_reg] = dict(table_exprs[src_reg])
-                        if src_reg in shift_exprs:
-                            shift_exprs[dest_reg] = dict(shift_exprs[src_reg])
+                        if src_reg in ast_env:
+                            ast_env[dest_reg] = copy.deepcopy(ast_env[src_reg])
+                            ast_env[dest_reg].name = dest_reg
                     elif src_op and src_op['type'] == 'mem':
                         # Dynamically extract table pattern from loaded binary memory
                         extracted_pattern = []
@@ -138,58 +149,61 @@ class SymbolicInductionAnalyzer:
                         if not extracted_pattern:
                             extracted_pattern = [0]
 
-                        table_exprs[dest_reg] = {
-                            'pattern': extracted_pattern,
-                            'scale_var': None
-                        }
-                    src_expr = get_expr(src_op) if src_op else None
+                        ast_env[dest_reg] = RegisterLoopExpr(dest_reg)
+                        ast_env[dest_reg].add_term(PeriodicTerm(extracted_pattern))
+                    elif src_op and src_op['type'] == 'imm':
+                        ast_env[dest_reg] = RegisterLoopExpr(dest_reg).set_constant(src_op['value'])
+
+                    src_expr = get_affine_expr(src_op) if src_op else None
                     if src_expr:
                         env[dest_reg] = src_expr
+
                 elif mnemonic == 'imul':
                     if src_op and src_op['type'] == 'reg':
                         scale_var = src_op['value']
-                        if dest_reg in table_exprs:
-                            table_exprs[dest_reg]['scale_var'] = scale_var
+                        if dest_reg in ast_env:
+                            for term in ast_env[dest_reg].terms:
+                                if isinstance(term, PeriodicTerm):
+                                    term.scale_var = scale_var
+
                 elif mnemonic == 'add':
-                    src_expr = get_expr(src_op) if src_op else None
+                    src_expr = get_affine_expr(src_op) if src_op else None
                     if src_expr:
                         env[dest_reg] = env[dest_reg].add(src_expr)
+
                     if src_op and src_op['type'] == 'reg':
                         src_reg = src_op['value']
-                        # Accumulate compound table terms
-                        if src_reg in table_exprs:
-                            table_exprs[dest_reg] = dict(table_exprs[src_reg])
-                            summary.patterns[dest_reg] = list(table_exprs[src_reg]['pattern'])
-                            if table_exprs[src_reg].get('scale_var'):
-                                summary.pattern_scales[dest_reg] = table_exprs[src_reg]['scale_var']
-                        # Accumulate compound geometric shift terms
-                        if src_reg in shift_exprs:
-                            shift_exprs[dest_reg] = dict(shift_exprs[src_reg])
-                            summary.geometric_shifts[dest_reg] = dict(shift_exprs[src_reg])
+                        # Absorb and merge terms from source into destination AST
+                        if src_reg in ast_env and ast_env[src_reg].terms:
+                            for term in ast_env[src_reg].terms:
+                                ast_env[dest_reg].add_term(copy.deepcopy(term))
+
                 elif mnemonic == 'sub':
-                    src_expr = get_expr(src_op) if src_op else None
+                    src_expr = get_affine_expr(src_op) if src_op else None
                     if src_expr:
                         env[dest_reg] = env[dest_reg].sub(src_expr)
+
                 elif mnemonic == 'inc':
                     env[dest_reg] = env[dest_reg].add(AffineExpr.from_const(1))
+
                 elif mnemonic == 'dec':
                     env[dest_reg] = env[dest_reg].sub(AffineExpr.from_const(1))
+
                 elif mnemonic == 'shl':
                     # Rule 6: Check for geometric shift: shl reg, cl where cl is induction counter
                     if src_op and src_op['type'] == 'reg':
                         origin_var = reg_origins.get(dest_reg, dest_reg)
-                        shift_info = {
-                            'base': 2,
-                            'var': origin_var,
-                            'val': 1,
-                            'modulo_bits': 32
-                        }
-                        shift_exprs[dest_reg] = shift_info
-                        summary.geometric_shifts[dest_reg] = shift_info
+                        geom_term = GeometricTerm(
+                            base=2,
+                            var=origin_var,
+                            val=1,
+                            modulo_bits=32
+                        )
+                        ast_env[dest_reg] = RegisterLoopExpr(dest_reg).add_term(geom_term)
 
         # Identify Loop-Carried registers (registers READ before being WRITTEN in loop body)
-        read_first_regs = set()
-        written_first_regs = set()
+        read_first_regs: Set[str] = set()
+        written_first_regs: Set[str] = set()
         for record in body:
             if hasattr(record, 'body'):
                 continue
@@ -204,7 +218,7 @@ class SymbolicInductionAnalyzer:
                     written_first_regs.add(base_r)
                     written_first_regs.add(r)
 
-        # Analyze extracted expressions for scalar deltas and constant sets
+        # Build Register Coupling Matrix (Rule 7)
         coupling_regs = list(all_regs)
         matrix = RegisterCouplingMatrix(coupling_regs)
 
@@ -212,24 +226,50 @@ class SymbolicInductionAnalyzer:
             final_expr = env.get(r)
             if not final_expr:
                 continue
-            delta = final_expr.get_scalar_delta(r)
-            if delta is not None:
-                if delta != 0:
-                    summary.deltas[r] = delta
-            elif final_expr.is_constant():
-                summary.constant_sets[r] = final_expr.offset
-
             matrix.set_affine_row(r, final_expr)
 
-        # Filter patterns and geometric_shifts to only keep Loop-Carried registers (accumulators)
-        summary.patterns = {r: p for r, p in summary.patterns.items() if r in read_first_regs}
-        summary.pattern_scales = {r: s for r, s in summary.pattern_scales.items() if r in read_first_regs}
-        summary.geometric_shifts = {r: g for r, g in summary.geometric_shifts.items() if r in read_first_regs}
-
         summary.coupling_matrix = matrix
-        return (
-            len(summary.deltas) > 0
-            or len(summary.geometric_shifts) > 0
-            or len(summary.patterns) > 0
-            or len(summary.telescoping_cascades) > 0
-        )
+
+        # Populate summary.register_exprs with the unified AST expressions
+        for r in all_regs:
+            final_expr = env.get(r)
+            ast_expr = ast_env.get(r)
+            if not final_expr or not ast_expr:
+                continue
+
+            delta = final_expr.get_scalar_delta(r)
+            is_loop_carried = (r in read_first_regs)
+
+            has_structured_terms = len(ast_expr.terms) > 0
+
+            if is_loop_carried:
+                if has_structured_terms:
+                    summary.register_exprs[r] = ast_expr
+                    for t in ast_expr.terms:
+                        if isinstance(t, PeriodicTerm):
+                            summary.patterns[r] = t.pattern
+                            if t.scale_var:
+                                summary.pattern_scales[r] = t.scale_var
+                        elif isinstance(t, GeometricTerm):
+                            summary.geometric_shifts[r] = {
+                                'base': t.base,
+                                'var': t.var,
+                                'val': t.val,
+                                'modulo_bits': t.modulo_bits
+                            }
+                        elif isinstance(t, TelescopingTerm):
+                            summary.telescoping_cascades[r] = t.cascade
+                elif delta is not None and delta != 0:
+                    summary.register_exprs[r] = RegisterLoopExpr(r).add_term(LinearTerm(delta))
+                    summary.deltas[r] = delta
+                elif final_expr.is_constant():
+                    summary.register_exprs[r] = RegisterLoopExpr(r).set_constant(final_expr.offset)
+                    summary.constant_sets[r] = final_expr.offset
+            else:
+                if final_expr.is_constant():
+                    summary.register_exprs[r] = RegisterLoopExpr(r).set_constant(final_expr.offset)
+                    summary.constant_sets[r] = final_expr.offset
+
+        return len(summary.register_exprs) > 0 or len(summary.deltas) > 0
+
+

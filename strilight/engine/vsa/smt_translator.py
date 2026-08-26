@@ -1,7 +1,7 @@
 import z3
 import logging
-from typing import Dict, List, Any, Optional, Tuple, Callable
-from strilight.engine.vsa.models import LoopSummary, TelescopingCascade
+from typing import Dict, List, Any, Optional, Tuple, Callable, Set
+from strilight.engine.vsa.models import LoopSummary, TelescopingCascade, RegisterLoopExpr
 from strilight.engine.x86_defs import REG_TO_BASE
 
 logger = logging.getLogger("strilight.engine.vsa.smt_translator")
@@ -253,8 +253,8 @@ class LoopSMTTranslator:
         """
         Translates all components of a LoopSummary into canonical SMT AST state updates
         following the Grand Master Recurrence Equation:
-            X(N) = A(N) * X_0 + [ Delta_scalar(N) + Delta_poly(N) + Delta_tele(N) + Delta_geom(N) ]
-        with neutral identity elements (0 for addition, 1 for multiplication).
+            X(N) = A(N) * X_0 + Delta_total(N)
+        Evaluates directly through Universal Loop Expression Trees (register_exprs).
         """
         to_base = reg_to_base_fn or (lambda r: REG_TO_BASE.get(r, r))
         composed_inner = composed_inner_deltas or {}
@@ -268,6 +268,8 @@ class LoopSMTTranslator:
 
         # Track all active destinations
         target_keys: Set[str] = set()
+        for k in summary.register_exprs:
+            target_keys.add(k)
         for k in getattr(summary, 'deltas', {}):
             target_keys.add(k)
         for k in getattr(summary, 'patterns', {}):
@@ -295,7 +297,80 @@ class LoopSMTTranslator:
         for dest_key, raw_aliases in canonical_targets.items():
             is_mem, mem_addr, mem_sz = parse_mem_key(dest_key)
 
-            # Check if this target is a pure constant set
+            # Check if any alias has a composed inner loop delta
+            has_composed_inner = False
+            inner_step_delta = None
+            for alias in raw_aliases:
+                if alias in composed_inner:
+                    has_composed_inner = True
+                    inner_step_delta = composed_inner[alias]
+                    break
+
+            if has_composed_inner and inner_step_delta is not None:
+                direct_d = 0
+                for alias in raw_aliases:
+                    if alias in getattr(summary, 'direct_deltas', {}):
+                        direct_d = summary.direct_deltas[alias]
+                        break
+
+                total_delta_n = (inner_step_delta + direct_d) * N_ast
+                total_delta_prev = (inner_step_delta + direct_d) * N_prev_ast
+                scale_n = z3.BitVecVal(1, 64)
+                scale_prev = z3.BitVecVal(1, 64)
+
+                updates.append(LoopStateUpdate(
+                    name=dest_key,
+                    scale_ast=z3.simplify(scale_n),
+                    scale_prev_ast=z3.simplify(scale_prev),
+                    delta_ast=z3.simplify(total_delta_n),
+                    delta_prev_ast=z3.simplify(total_delta_prev),
+                    is_mem=is_mem,
+                    mem_addr=mem_addr,
+                    mem_size_bits=mem_sz,
+                ))
+                continue
+
+            # Check if this target is directly represented by a RegisterLoopExpr
+            matched_expr: Optional[RegisterLoopExpr] = None
+            for alias in raw_aliases:
+                if alias in summary.register_exprs:
+                    matched_expr = summary.register_exprs[alias]
+                    break
+
+            if matched_expr is not None:
+                # -------------------------------------------------------------
+                # Pure Universal AST Evaluation: O(1) Zero Double-Counting
+                # -------------------------------------------------------------
+                if matched_expr.constant_val is not None:
+                    updates.append(LoopStateUpdate(
+                        name=dest_key,
+                        constant_val=matched_expr.constant_val,
+                        is_mem=is_mem,
+                        mem_addr=mem_addr,
+                        mem_size_bits=mem_sz,
+                    ))
+                    continue
+
+                scale_n, scale_prev, total_delta_n, total_delta_prev = matched_expr.to_smt(
+                    N_ast=N_ast,
+                    N_prev_ast=N_prev_ast,
+                    resolve_val_fn=resolve_val_fn,
+                    bit_size=64
+                )
+
+                updates.append(LoopStateUpdate(
+                    name=dest_key,
+                    scale_ast=z3.simplify(scale_n),
+                    scale_prev_ast=z3.simplify(scale_prev),
+                    delta_ast=z3.simplify(total_delta_n),
+                    delta_prev_ast=z3.simplify(total_delta_prev),
+                    is_mem=is_mem,
+                    mem_addr=mem_addr,
+                    mem_size_bits=mem_sz,
+                ))
+                continue
+
+            # Fallback legacy calculation if no RegisterLoopExpr was found
             const_val = None
             for alias in raw_aliases:
                 if alias in getattr(summary, 'constant_sets', {}):
@@ -312,91 +387,25 @@ class LoopSMTTranslator:
                 ))
                 continue
 
-            # -------------------------------------------------------------
-            # The Grand Master Recurrence Equation:
-            # X(N) = A(N) * X_0 + Delta_total(N)
-            # -------------------------------------------------------------
-            # Multiplicative Identity Kernel A(N) (Default = 1)
             scale_n = z3.BitVecVal(1, 64)
             scale_prev = z3.BitVecVal(1, 64)
-
-            # Additive Identity Delta Total (Default = 0)
             total_delta_n = z3.BitVecVal(0, 64)
             total_delta_prev = z3.BitVecVal(0, 64)
 
-            # 1. Scalar Linear Strides: N * Delta
-            seen_scalar = False
             for alias in raw_aliases:
-                if alias in composed_inner:
-                    step_delta = composed_inner[alias]
-                    total_delta_n = total_delta_n + (step_delta * N_ast)
-                    total_delta_prev = total_delta_prev + (step_delta * N_prev_ast)
-                    seen_scalar = True
+                if alias in getattr(summary, 'deltas', {}):
+                    direct_delta = getattr(summary, 'direct_deltas', {}).get(alias, summary.deltas[alias])
+                    if direct_delta != 0:
+                        total_delta_n = total_delta_n + (z3.BitVecVal(direct_delta, 64) * N_ast)
+                        total_delta_prev = total_delta_prev + (z3.BitVecVal(direct_delta, 64) * N_prev_ast)
                     break
-                elif alias in getattr(summary, 'deltas', {}):
-                    if not seen_scalar:
-                        direct_delta = getattr(summary, 'direct_deltas', {}).get(alias, summary.deltas[alias])
-                        if direct_delta != 0:
-                            total_delta_n = total_delta_n + (z3.BitVecVal(direct_delta, 64) * N_ast)
-                            total_delta_prev = total_delta_prev + (z3.BitVecVal(direct_delta, 64) * N_prev_ast)
-                        seen_scalar = True
-
-            # 2. Polycyclic Patterns: Q * CycleSum + Prefix[R]
-            for alias in raw_aliases:
-                if alias in composed_inner:
-                    continue
-                if alias in getattr(summary, 'patterns', {}):
-                    pattern = summary.patterns[alias]
-                    scale_var = getattr(summary, 'pattern_scales', {}).get(alias)
-                    if scale_var:
-                        scale_ast = get_phys_reg_fn(scale_var)
-                        if scale_ast.size() != 64:
-                            scale_ast = z3.ZeroExt(64 - scale_ast.size(), scale_ast)
-                        poly_n = cls.build_polycyclic_delta_ast(N_ast, pattern, 64) * scale_ast
-                        poly_prev = cls.build_polycyclic_delta_ast(N_prev_ast, pattern, 64) * scale_ast
-                    else:
-                        poly_n = cls.build_polycyclic_delta_ast(N_ast, pattern, 64)
-                        poly_prev = cls.build_polycyclic_delta_ast(N_prev_ast, pattern, 64)
-
-                    total_delta_n = total_delta_n + poly_n
-                    total_delta_prev = total_delta_prev + poly_prev
-
-            # 3. Geometric Shifts: (2^N - 1) * scale
-            for alias in raw_aliases:
-                if alias in getattr(summary, 'geometric_shifts', {}):
-                    shift_info = summary.geometric_shifts[alias]
-                    src_var = shift_info.get('var')
-                    src_ast = get_phys_reg_fn(src_var) if src_var else None
-                    iter_bound = getattr(summary, 'iterations', 0)
-
-                    g_n, g_prev = cls.build_geometric_shift_ast(
-                        N_ast, N_prev_ast, shift_info, src_ast=src_ast, iterations_bound=iter_bound
-                    )
-                    total_delta_n = total_delta_n + g_n
-                    total_delta_prev = total_delta_prev + g_prev
-
-            # 4. Telescoping Cascades: sum(P_k * Delta_k) * N
-            for alias in raw_aliases:
-                if alias in getattr(summary, 'telescoping_cascades', {}):
-                    cascade = summary.telescoping_cascades[alias]
-                    t_n, t_prev = cls.build_telescoping_cascade_ast(
-                        N_ast, N_prev_ast, alias, cascade, resolve_val_fn=resolve_val_fn
-                    )
-                    total_delta_n = total_delta_n + t_n
-                    total_delta_prev = total_delta_prev + t_prev
-
-            # Simplify expressions into canonical forms
-            total_delta_n = z3.simplify(total_delta_n)
-            total_delta_prev = z3.simplify(total_delta_prev)
-            scale_n = z3.simplify(scale_n)
-            scale_prev = z3.simplify(scale_prev)
 
             updates.append(LoopStateUpdate(
                 name=dest_key,
-                scale_ast=scale_n,
-                scale_prev_ast=scale_prev,
-                delta_ast=total_delta_n,
-                delta_prev_ast=total_delta_prev,
+                scale_ast=z3.simplify(scale_n),
+                scale_prev_ast=z3.simplify(scale_prev),
+                delta_ast=z3.simplify(total_delta_n),
+                delta_prev_ast=z3.simplify(total_delta_prev),
                 is_mem=is_mem,
                 mem_addr=mem_addr,
                 mem_size_bits=mem_sz,
