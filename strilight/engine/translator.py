@@ -1004,20 +1004,19 @@ class Z3Translator:
 
     def translate_slice(self, slice_records: List):
         logger.debug("Starting Z3 Translation Phase (Native Width Model)...")
-        from strilight.engine.vsa_evaluator import LoopSummary
+        from strilight.engine.vsa import LoopSummary
         chronological_slice = list(reversed(slice_records))
         for i, item in enumerate(chronological_slice):
             if isinstance(item, LoopSummary):
                 self.translate_loop_summary(item, item.iterations)
             else:
-                next_instr = chronological_slice[i + 1] if i + 1 < len(chronological_slice) else None
                 self.parse_instruction(item)
         logger.debug("Z3 Translation Complete. Assertions:")
         for assertion in self.solver.assertions():
             logger.debug("  %s", assertion)
 
     def translate_loop_summary(self, summary, max_iterations: int):
-        from strilight.engine.vsa_evaluator import LoopSummary
+        from strilight.engine.vsa import LoopSummary, LoopSMTTranslator
         if not isinstance(summary, LoopSummary):
             return
 
@@ -1032,65 +1031,42 @@ class Z3Translator:
             loop_var_name = f'LoopCounter_t{loop_tick}'
         else:
             loop_var_name = self._get_new_ssa_name('LoopCounter')
-            
+
         N = z3.BitVec(loop_var_name, 64)
         summary.loop_counter_var = N
         self.latest_loop_counter = N
-        
+
         # 2. Bound N (0 <= N <= 10,000,000)
         self.solver.add(z3.UGE(N, 0))
         self.solver.add(z3.ULE(N, 10000000))
-        
-        # 3. Optimize N (User's instruction: Minimize N to find the shortest path)
+
+        # 3. Optimize N (Minimize N to find the shortest path)
         if hasattr(self.solver, 'minimize'):
-             self.solver.minimize(N)
-        
+            self.solver.minimize(N)
+
         # Temporarily clear current_instr to prevent _write_operand from overriding addresses
         old_instr = getattr(self, 'current_instr', None)
         self.current_instr = None
-        
-        def _build_polycyclic_delta(N_var, pattern: List[int], bit_size: int = 64):
-            P = len(pattern)
-            P_val = z3.BitVecVal(P, bit_size)
-            cycle_sum = sum(pattern)
-            cycle_sum_val = z3.BitVecVal(cycle_sum, bit_size)
-            
-            Q = z3.UDiv(N_var, P_val)
-            R = z3.URem(N_var, P_val)
-            
-            prefix = [0]
-            for x in pattern:
-                prefix.append(prefix[-1] + x)
-                
-            def build_prefix_if(R_ast, p_list, idx=1):
-                if idx >= len(p_list) - 1:
-                    return z3.BitVecVal(p_list[idx], bit_size)
-                return z3.If(
-                    R_ast == idx,
-                    z3.BitVecVal(p_list[idx], bit_size),
-                    build_prefix_if(R_ast, p_list, idx + 1)
-                )
-                
-            extra_delta = z3.If(R == 0, z3.BitVecVal(0, bit_size), build_prefix_if(R, prefix, 1))
-            return Q * cycle_sum_val + extra_delta
-            
+
         shadow_subs = []
         composed_inner_deltas = {}
         N_prev = z3.If(N > 0, N - 1, z3.BitVecVal(0, 64))
-        
-        # 3. Process Child Inner Loops Symbolically
+
+        # 4. Process Child Inner Loops Symbolically
         inner_summaries = getattr(summary, 'inner_summaries', [])
-        composed_inner_deltas = {}
         for inner_sum in inner_summaries:
             inner_tick = getattr(inner_sum, 'tick', None)
             if inner_tick is not None:
                 inner_var_name = f'LoopCounter_t{inner_tick}'
                 N_inner = z3.BitVec(inner_var_name, 64)
                 inner_sum.loop_counter_var = N_inner
-                self.add_tracked_constraint(z3.And(z3.UGE(N_inner, 0), z3.ULE(N_inner, 10000000)), f"Inner Loop Bound (t{inner_tick})")
+                self.add_tracked_constraint(
+                    z3.And(z3.UGE(N_inner, 0), z3.ULE(N_inner, 10000000)),
+                    f"Inner Loop Bound (t{inner_tick})"
+                )
                 if hasattr(self.solver, 'minimize'):
                     self.solver.minimize(N_inner)
-                    
+
                 inner_shadow_subs = []
                 for reg_name, delta in getattr(inner_sum, 'deltas', {}).items():
                     if reg_name.startswith("MEM_"):
@@ -1117,20 +1093,19 @@ class Z3Translator:
                         t_after_shadow = z3.If(N_inner > 0, t_before + delta * (N_inner - 1), t_before)
                         t_after_shadow_extracted = z3.Extract(t_after.size() - 1, 0, t_after_shadow)
                         inner_shadow_subs.append((t_after, t_after_shadow_extracted))
-                        
+
                 # Extract inner polycyclic pattern expressions for data flow
                 for reg_name, pattern in getattr(inner_sum, 'patterns', {}).items():
-                    from strilight.engine.vsa import LoopSMTTranslator
                     d_expr = LoopSMTTranslator.build_polycyclic_delta_ast(N_inner, pattern, 64)
                     composed_inner_deltas[reg_name] = d_expr
                     logger.debug("Built Symbolic Inner Closed-Form Pattern for %s (Period P=%d)", reg_name, len(pattern))
-                    
+
                 exit_cond_str = getattr(inner_sum, 'exit_condition', '') or ''
                 for reg_name, delta in getattr(inner_sum, 'deltas', {}).items():
                     if reg_name not in composed_inner_deltas and reg_name not in exit_cond_str:
                         composed_inner_deltas[reg_name] = z3.BitVecVal(delta, 64) * N_inner
                         logger.debug("Built Symbolic Inner Scalar Delta for %s: %s * %s", reg_name, delta, N_inner)
-                        
+
                 # Translate inner exit condition to bind N_inner
                 if getattr(inner_sum, 'exit_records', None):
                     self.last_jcc_cond_ast = None
@@ -1144,9 +1119,7 @@ class Z3Translator:
                         self.add_tracked_constraint(z3.Implies(N_inner > 0, iron_c), f"Inner Loop Exit Iron Constraint (t{inner_tick})")
                         logger.debug("Inner Loop Exit Iron Constraint successfully injected for N_inner=%s!", N_inner)
 
-        # 4. Delegate all mathematical formulas to LoopSMTTranslator (Decoupled SMT-LIB2 Engine)
-        from strilight.engine.vsa import LoopSMTTranslator
-
+        # 5. Delegate all mathematical formulas to LoopSMTTranslator (Decoupled SMT-LIB2 Engine)
         def _resolve_val_to_ast(val):
             if isinstance(val, int):
                 return z3.BitVecVal(val, 64)
@@ -1176,7 +1149,7 @@ class Z3Translator:
             composed_inner_deltas=composed_inner_deltas,
         )
 
-        # 5. Apply SMT Updates to SSA Timeline and Machine State
+        # 6. Apply SMT Updates to SSA Timeline and Machine State
         for upd in smt_updates:
             if upd.constant_val is not None:
                 if upd.is_mem:
@@ -1218,30 +1191,26 @@ class Z3Translator:
 
         # Restore current_instr
         self.current_instr = old_instr
-            
+
         # 7. Apply Exit Condition via SSA!
-        # By translating the exit records, Z3 automatically uses the updated SSA registers 
-        # (e.g. ecx_t1, edx_t0) to create the link between LoopCounter and the tainted variables!
         if hasattr(summary, 'exit_records') and summary.exit_records:
             self.last_jcc_cond_ast = None
             self.last_jcc_jump_taken = None
-            
+
             for record in summary.exit_records:
                 self.parse_instruction(record)
-                
+
             if self.last_jcc_cond_ast is not None and self.last_jcc_jump_taken is not None:
                 logger.debug("Applying N-1 Iron Constraint!")
-                
+
                 cond_shadow_ast = z3.substitute(self.last_jcc_cond_ast, *shadow_subs)
-                
-                # The jump taken status at N-1 MUST be the OPPOSITE of what it was at N.
                 expected_shadow_jump_taken = not self.last_jcc_jump_taken
-                
+
                 if expected_shadow_jump_taken:
                     iron_constraint = cond_shadow_ast
                 else:
                     iron_constraint = z3.Not(cond_shadow_ast)
-                    
+
                 self.add_tracked_constraint(z3.Implies(N > 0, iron_constraint), f"Outer Loop Exit Iron Constraint (t{loop_tick})")
                 logger.debug("Loop exit equation successfully built and injected into solver.")
 
