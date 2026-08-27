@@ -407,9 +407,11 @@ class LoopSMTTranslator:
             return []
 
         def eval_target_at_step(target: Any) -> Tuple[Optional[z3.BitVecRef], Optional[z3.BitVecRef]]:
+            matched_expr = None
+            base_val = None
+
             if isinstance(target, str):
                 base_var = target.lower().strip()
-                matched_expr = None
                 if base_var in summary.register_exprs:
                     matched_expr = summary.register_exprs[base_var]
                 else:
@@ -422,21 +424,41 @@ class LoopSMTTranslator:
                 if base_val is None:
                     base_val = z3.BitVecVal(0, 64)
 
-                if matched_expr is not None and matched_expr.constant_val is None:
-                    scale_n, scale_prev, delta_n, delta_prev = matched_expr.to_smt(
-                        N_ast=N_ast,
-                        N_prev_ast=N_prev_ast,
-                        resolve_val_fn=resolve_val_fn,
-                        bit_size=base_val.size() if hasattr(base_val, 'size') else 64
-                    )
-                    val_at_N = (scale_n * base_val) + delta_n
-                    val_at_prev = z3.If(N_ast > 0, (scale_prev * base_val) + delta_prev, base_val)
-                    return val_at_N, val_at_prev
-                else:
-                    return base_val, base_val
+            elif isinstance(target, dict) and target.get('type') == 'mem':
+                base_val = resolve_val_fn(target)
+                if base_val is None:
+                    base_val = z3.BitVecVal(0, 64)
+
+                mem_size = target.get('size', 8) * 8
+                disp = target.get('disp', 0)
+                base_reg = target.get('base')
+                base_reg_val = resolve_val_fn(base_reg) if base_reg else None
+                if isinstance(base_reg_val, z3.BitVecNumRef):
+                    concrete_addr = base_reg_val.as_long() + disp
+                    mem_key = f"MEM_{concrete_addr}_{mem_size}"
+                    if mem_key in summary.register_exprs:
+                        matched_expr = summary.register_exprs[mem_key]
+                elif isinstance(base_val, z3.BitVecRef):
+                    for k, expr in summary.register_exprs.items():
+                        if expr.is_mem:
+                            matched_expr = expr
+                            break
             else:
                 val = resolve_val_fn(target)
                 return val, val
+
+            if matched_expr is not None and matched_expr.constant_val is None:
+                scale_n, scale_prev, delta_n, delta_prev = matched_expr.to_smt(
+                    N_ast=N_ast,
+                    N_prev_ast=N_prev_ast,
+                    resolve_val_fn=resolve_val_fn,
+                    bit_size=base_val.size() if hasattr(base_val, 'size') else 64
+                )
+                val_at_N = (scale_n * base_val) + delta_n
+                val_at_prev = z3.If(N_ast > 0, (scale_prev * base_val) + delta_prev, base_val)
+                return val_at_N, val_at_prev
+            else:
+                return base_val, base_val
 
         lhs_N, lhs_prev = eval_target_at_step(lhs)
         rhs_N, rhs_prev = eval_target_at_step(rhs)
