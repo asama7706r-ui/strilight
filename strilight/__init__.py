@@ -59,6 +59,11 @@ try:
 except ImportError:
     pass
 
+try:
+    from strilight.engine.stack_engine import SymbolicStackEngine, StackByteCell
+except ImportError:
+    pass
+
 
 # =============================================================================
 # High-Level Facade API (Instant Developer Experience)
@@ -121,4 +126,6 @@ __all__ = [
     "Interval",
     "StridedInterval",
     "DisjointIntervalSet",
+    "SymbolicStackEngine",
+    "StackByteCell",
 ]

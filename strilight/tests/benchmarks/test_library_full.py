@@ -18,7 +18,7 @@ import z3
 import subprocess
 
 # Add speakeasy path for Windows emulation backend
-app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, os.path.join(app_dir, 'speakeasy'))
 
 # Import directly from the installed strilight library
