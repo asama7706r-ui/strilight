@@ -1041,11 +1041,42 @@ class Z3Translator:
                     if ast.size() != 64:
                         ast = z3.ZeroExt(64 - ast.size(), ast)
                     return ast
+            elif isinstance(val, dict):
+                ast, _ = self._read_operand(val)
+                if ast is not None:
+                    if ast.size() != 64:
+                        ast = z3.ZeroExt(64 - ast.size(), ast)
+                    return ast
+                return None
             elif isinstance(val, (z3.BitVecRef, z3.ExprRef)):
                 if val.size() != 64:
                     return z3.ZeroExt(64 - val.size(), val)
                 return val
             return None
+
+        # 4.5. Apply Direct Body Scope Instructions (Inter-Loop State Transition)
+        direct_records = getattr(summary, 'direct_records', [])
+        if direct_records:
+            for r_instr in direct_records:
+                if hasattr(r_instr, 'mnemonic') and not r_instr.mnemonic.startswith('j') and r_instr.mnemonic not in ('cmp', 'test'):
+                    is_induction_step = False
+                    if r_instr.mnemonic in ('add', 'sub', 'inc', 'dec'):
+                        for op in getattr(r_instr, 'operands', []):
+                            if isinstance(op, dict) and op.get('type') == 'mem':
+                                addr_list = getattr(r_instr, 'mem_write', None) or getattr(r_instr, 'mem_read', None)
+                                if addr_list:
+                                    mem_key = f"MEM_{addr_list[0]}_{op.get('size', 4) * 8}"
+                                    if mem_key in summary.deltas or mem_key in summary.register_exprs:
+                                        is_induction_step = True
+                                        break
+                            elif isinstance(op, dict) and op.get('type') == 'reg':
+                                r_name = op.get('value')
+                                base_r = self._reg_to_base.get(r_name, r_name)
+                                if r_name in summary.deltas or base_r in summary.deltas or r_name in summary.register_exprs or base_r in summary.register_exprs:
+                                    is_induction_step = True
+                                    break
+                    if not is_induction_step:
+                        self.parse_instruction(r_instr)
 
         # 5. Process Child Inner Loops Symbolically via LoopSMTTranslator
         inner_summaries = getattr(summary, 'inner_summaries', [])
@@ -1063,6 +1094,12 @@ class Z3Translator:
                     self.solver.minimize(N_inner)
 
                 N_inner_prev = z3.If(N_inner > 0, N_inner - 1, z3.BitVecVal(0, 64))
+
+                # Evaluate pre-comparison slice instructions in exit_records to bind computed bounds (e.g. key % 10)
+                if getattr(inner_sum, 'exit_records', None):
+                    for r_instr in inner_sum.exit_records:
+                        if hasattr(r_instr, 'mnemonic') and not r_instr.mnemonic.startswith('j') and r_instr.mnemonic not in ('cmp', 'test'):
+                            self.parse_instruction(r_instr)
 
                 # Build inner SMT updates and compose into composed_inner_deltas
                 inner_updates = LoopSMTTranslator.translate_loop_summary_to_smt_updates(
@@ -1087,12 +1124,6 @@ class Z3Translator:
                     if reg_name not in composed_inner_deltas and reg_name not in exit_cond_str:
                         composed_inner_deltas[reg_name] = z3.BitVecVal(delta, 64) * N_inner
                         logger.debug("Built Symbolic Inner Scalar Delta for %s: %s * %s", reg_name, delta, N_inner)
-
-                # Evaluate pre-comparison slice instructions in exit_records to bind computed bounds (e.g. key % 10)
-                if getattr(inner_sum, 'exit_records', None):
-                    for r_instr in inner_sum.exit_records:
-                        if hasattr(r_instr, 'mnemonic') and not r_instr.mnemonic.startswith('j') and r_instr.mnemonic not in ('cmp', 'test'):
-                            self.parse_instruction(r_instr)
 
                 # Translate inner exit condition via LoopSMTTranslator
                 inner_exit_constraints = LoopSMTTranslator.build_loop_exit_constraints(

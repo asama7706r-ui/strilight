@@ -659,6 +659,7 @@ class LoopSummary:
         self.direct_deltas: Dict[str, int] = {}
         self.direct_patterns: Dict[str, List[int]] = {}
         self.direct_constant_sets: Dict[str, int] = {}
+        self.direct_records: List['TraceRecord'] = []
         self.tick: Optional[int] = None
 
     def _sync_delta(self, key: str, val: Optional[int]):

@@ -438,10 +438,20 @@ class LoopSMTTranslator:
                     mem_key = f"MEM_{concrete_addr}_{mem_size}"
                     if mem_key in summary.register_exprs:
                         matched_expr = summary.register_exprs[mem_key]
-                elif isinstance(base_val, z3.BitVecRef):
-                    for k, expr in summary.register_exprs.items():
-                        if expr.is_mem:
-                            matched_expr = expr
+
+                # Match from exit records if base register is symbolic (e.g. rbp / rsp)
+                if matched_expr is None and getattr(summary, 'exit_records', None):
+                    for r in summary.exit_records:
+                        for op in getattr(r, 'operands', []):
+                            if isinstance(op, dict) and op.get('type') == 'mem':
+                                if op.get('base') == base_reg and op.get('disp', 0) == disp:
+                                    addr_list = getattr(r, 'mem_read', None) or getattr(r, 'mem_write', None)
+                                    if addr_list:
+                                        mem_key = f"MEM_{addr_list[0]}_{mem_size}"
+                                        if mem_key in summary.register_exprs:
+                                            matched_expr = summary.register_exprs[mem_key]
+                                            break
+                        if matched_expr is not None:
                             break
             else:
                 val = resolve_val_fn(target)

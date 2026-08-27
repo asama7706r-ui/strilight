@@ -219,6 +219,7 @@ class LoopEvaluator:
         if summary.inner_summaries:
             direct_body = [r for r in loop_block.body if not hasattr(r, 'body')]
             if direct_body:
+                summary.direct_records = direct_body
                 direct_state_0 = AbstractState()
                 self._extract_ops(direct_body, direct_state_0)
                 direct_passes = [direct_state_0]
