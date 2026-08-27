@@ -8,9 +8,9 @@ version = "0.1.0"
 description = "High-Performance O(1) SMT Loop Lifting & Strided Interval Domain for x86_64"
 readme = "README.md"
 authors = [
-    { name = "Developer" }
+    { name = "Asama", email = "asama7706r@gmail.com" }
 ]
-license = { text = "Proprietary / Dual-License" }
+license = { text = "GPL-3.0-or-later / Commercial Dual-License" }
 requires-python = ">=3.9"
 dependencies = [
     "capstone>=5.0.0"

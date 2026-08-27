@@ -257,18 +257,30 @@ Please feel free to open an **Issue** or submit a **Pull Request**.
 
 ---
 
-## 📄 License & Citation
+## 📄 License & Commercial Inquiries
 
-Distributed under the **MIT License** / Dual Proprietary Research License.
+**Strilight** is released under a **Dual-Licensing Model**:
 
-If you use **Strilight** in academic research or security tooling, please cite:
+1. **Open Source & Academic Research (GNU GPLv3+)**:  
+   Free to use, modify, and distribute under the terms of the **GNU General Public License v3.0 or later**. Any derivative work or integrated binary analysis tool must also remain open source under the GNU GPLv3.
+2. **Proprietary & Commercial Licensing**:  
+   For enterprise integration, commercial security appliances, closed-source reverse engineering platforms, or custom licensing terms exempt from GPL copyleft obligations, please contact:
+   * **Author**: Asama
+   * **Email**: `asama7706r@gmail.com`
+   * **Repository**: [https://github.com/asama7706r-ui/strilight](https://github.com/asama7706r-ui/strilight)
+
+---
+
+## 📚 Citation
+
+If you use **Strilight** in academic research or security publications, please cite:
 
 ```bibtex
 @software{strilight2026,
   title = {Strilight: High-Performance O(1) SMT Loop Lifting & Strided Interval Domain for Binary Analysis},
-  author = {Strilight Contributors},
+  author = {Asama},
   year = {2026},
-  version = {0.1.0-alpha},
+  version = {0.1.0-alpha.2},
   url = {https://github.com/asama7706r-ui/strilight}
 }
 ```
