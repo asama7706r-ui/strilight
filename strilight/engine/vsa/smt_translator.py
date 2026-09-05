@@ -1,6 +1,11 @@
-import z3
+from __future__ import annotations
 import logging
 from typing import Dict, List, Any, Optional, Tuple, Callable, Set
+
+try:
+    import z3
+except ImportError:
+    z3 = None
 from strilight.engine.vsa.models import (
     LoopSummary,
     TelescopingCascade,

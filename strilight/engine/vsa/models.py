@@ -1,8 +1,13 @@
+from __future__ import annotations
 import copy
 from fractions import Fraction
 import logging
 from typing import Dict, Optional, List, Any, Tuple, Callable, Set, Union, TYPE_CHECKING
-import z3
+
+try:
+    import z3
+except ImportError:
+    z3 = None
 
 if TYPE_CHECKING:
     from strilight.extensions.tracker import TraceRecord
