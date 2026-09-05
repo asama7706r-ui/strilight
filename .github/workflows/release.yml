@@ -68,7 +68,8 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install --no-index --find-links=dist strilight
+          pip install dist/*.whl
+
 
       - name: Run verification example suite
         shell: bash
