@@ -1,7 +1,7 @@
 import pytest
 import z3
-from strilight.engine.translator import Z3Translator
-from strilight.engine.tracker import TraceRecord
+from strilight.extensions.translator import Z3Translator
+from strilight.extensions.tracker import TraceRecord
 from strilight.tests.utils.record_factory import RecordFactory
 
 def get_value(translator, reg):

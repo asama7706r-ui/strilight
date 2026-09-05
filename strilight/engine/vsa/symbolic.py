@@ -3,6 +3,7 @@ import copy
 from typing import List, Dict, Any, Optional, Set
 from strilight.engine.vsa.models import (
     AffineExpr,
+    VariableCouplingMatrix,
     RegisterCouplingMatrix,
     LoopSummary,
     TelescopingBranch,
@@ -12,13 +13,14 @@ from strilight.engine.vsa.models import (
     PeriodicTerm,
     GeometricTerm,
     TelescopingTerm,
+    VariableLoopExpr,
     RegisterLoopExpr,
     ScaleKernel,
     IdentityScale,
     PowerScale,
 )
-from strilight.engine.vsa.state_ops import get_operand_list
-from strilight.engine.x86_defs import REG_TO_BASE, JCC_RELATIONAL_OPS
+from strilight.arch.x86.state_ops import get_operand_list
+from strilight.arch.x86.defs import REG_TO_BASE, JCC_RELATIONAL_OPS
 
 
 class SymbolicInductionAnalyzer:

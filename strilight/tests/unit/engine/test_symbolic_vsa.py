@@ -1,7 +1,12 @@
-import pytest
-from strilight.engine.vsa_evaluator import LoopEvaluator, LoopSummary, AffineExpr, RegisterCouplingMatrix
-from strilight.engine.loop_compressor import LoopBlock
-from strilight.engine.instruction import Instruction
+from strilight.engine.vsa import (
+    LoopEvaluator,
+    LoopSummary,
+    AffineExpr,
+    VariableCouplingMatrix,
+    RegisterCouplingMatrix,
+)
+from strilight.arch.loop_compressor import LoopBlock
+from strilight.arch.instruction import Instruction
 
 
 def test_affine_expr_operations():
@@ -33,6 +38,19 @@ def test_register_coupling_matrix():
     assert not mat.is_identity()
     assert mat.matrix[mat.reg_to_idx["rax"]] == [1, 1, 0]
     assert mat.offset[mat.reg_to_idx["rax"]] == 4
+
+
+def test_variable_coupling_matrix_generic_variables():
+    """Test VariableCouplingMatrix with generic high-level variables (e.g. x, y, z)."""
+    vars = ["x", "y", "z"]
+    mat = VariableCouplingMatrix(vars)
+    assert mat.is_identity()
+    
+    # x' = x + 2*y + 10
+    mat.set_affine_row("x", AffineExpr({"x": 1, "y": 2}, 10))
+    assert not mat.is_identity()
+    assert mat.matrix[mat.var_to_idx["x"]] == [1, 2, 0]
+    assert mat.offset[mat.var_to_idx["x"]] == 10
 
 
 def test_symbolic_single_pass_linear_loop():

@@ -1,6 +1,6 @@
 import pytest
-from strilight.engine.path_tree import PathTree, PathNode
-from strilight.engine.tracker import TraceRecord
+from strilight.extensions.path_tree import PathTree, PathNode
+from strilight.extensions.tracker import TraceRecord
 
 def test_path_node_init():
     record = TraceRecord(tick=5, address=0x1000, mnemonic="add", op_str="rax, rbx", size=3)

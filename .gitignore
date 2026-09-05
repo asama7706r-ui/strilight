@@ -1,21 +1,27 @@
-venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+
+# C extensions & build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
 *.exe
-!strilight/tests/benchmarks/CrackMeFile/*.exe
 *.obj
 *.pdb
 *.ilk
 *.pyd
-*.so
-build/
-dist/
-*.egg-info/
-.coverage
+
+# Environments
+venv/
+env/
+.env
+
+# Testing & Coverage
 .pytest_cache/
-.gemini/
-.vscode/
+.coverage
 *.log
 *.txt
-.agents/
-.release-tag

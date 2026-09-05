@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import z3
 import strilight as sl
 from strilight.engine import LoopSummary, Z3Translator
-from strilight.pruning import StridedInterval
+from strilight.engine.domains import StridedInterval
 
 
 def main():

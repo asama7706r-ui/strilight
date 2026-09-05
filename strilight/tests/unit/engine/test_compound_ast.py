@@ -1,7 +1,7 @@
 import z3
 import pytest
 from strilight.engine.vsa.models import (
-    RegisterLoopExpr,
+    VariableLoopExpr,
     LinearTerm,
     PeriodicTerm,
     GeometricTerm,
@@ -12,7 +12,7 @@ from strilight.engine.vsa.models import (
     IdentityScale,
     PowerScale,
 )
-from strilight.engine.translator import Z3Translator
+from strilight.extensions.translator import Z3Translator
 
 
 def test_compound_ast_linear_and_periodic():
@@ -27,7 +27,7 @@ def test_compound_ast_linear_and_periodic():
     summary = LoopSummary()
     summary.iterations = 10
 
-    reg_expr = RegisterLoopExpr("rax")
+    reg_expr = VariableLoopExpr("rax")
     reg_expr.add_term(LinearTerm(stride=4))
     reg_expr.add_term(PeriodicTerm(pattern=[10, 20]))
     summary.register_exprs["rax"] = reg_expr
@@ -62,7 +62,7 @@ def test_compound_ast_geometric_and_linear():
     summary = LoopSummary()
     summary.iterations = 10
 
-    reg_expr = RegisterLoopExpr("rbx")
+    reg_expr = VariableLoopExpr("rbx")
     reg_expr.add_term(LinearTerm(stride=5))
     reg_expr.add_term(GeometricTerm(base=2, val=1))
     summary.register_exprs["rbx"] = reg_expr
@@ -88,7 +88,7 @@ def test_ast_definition_kill_overwrite():
     """
     Test that set_constant clears all prior terms (Definition-Kill).
     """
-    reg_expr = RegisterLoopExpr("rcx")
+    reg_expr = VariableLoopExpr("rcx")
     reg_expr.add_term(LinearTerm(10))
     reg_expr.add_term(PeriodicTerm([1, 2, 3]))
     assert len(reg_expr.terms) == 2
@@ -102,7 +102,7 @@ def test_ast_power_scale():
     """
     Test that PowerScale computes base^N * X_0.
     """
-    reg_expr = RegisterLoopExpr("rdx", scale_kernel=PowerScale(base=2))
+    reg_expr = VariableLoopExpr("rdx", scale_kernel=PowerScale(base=2))
     reg_expr.add_term(LinearTerm(stride=3))
     # State(N) = 2^N * rdx_0 + 3 * N
 

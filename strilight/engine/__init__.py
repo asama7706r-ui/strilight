@@ -1,79 +1,74 @@
 """
 Strilight Engine Subpackage
 ===========================
-Provides core binary analysis, loop compression, abstract interpretation,
-SSA translation, and backward/forward slice tracking.
+Provides core abstract interpretation, domains, and mathematical loop models.
 """
 
-from strilight.engine.instruction import Instruction
-from strilight.engine.loop_compressor import LoopBlock, TraceCompressor
-from strilight.engine.vsa_evaluator import LoopEvaluator, LoopSummary, LoopInvariantContract
-from strilight.engine.tracker_bridge import TrackerBridge
 from strilight.engine.abstract_state import AbstractState
-from strilight.engine.path_tree import PathTree, PathNode
-
-# Optional / Heavy dependencies (imported safely)
-try:
-    from strilight.engine.tracker import (
-        Tracker,
-        TraceRecord,
-        BackwardTracker,
-        BackwardSliceTracker,
-        ForwardSliceTracker,
-        Descendant,
-        Ancestor
-    )
-except ImportError:
-    pass
-
-try:
-    from strilight.engine.translator import Z3Translator
-except ImportError:
-    pass
 
 
 def __getattr__(name: str):
     """
-    Lazy load optional / heavy backend modules (PEP 562) to prevent
-    unintended eager emulation overhead and enable clean mocking in unit tests.
+    Lazy load engine subsystems, architecture and extension modules with PEP 562 for backward compatibility.
     """
+    if name in (
+        "LoopEvaluator",
+        "LoopSummary",
+        "LoopInvariantContract",
+        "StorageLayout",
+        "CompositeTensorDescriptor",
+        "SpatiotemporalCoordinate",
+        "SpatiotemporalTickModel",
+        "OrbitCarrierDescriptor",
+        "PerturbationEpochModel",
+        "OrbitPerturbationSystem"
+    ):
+        import strilight.engine.vsa as vsa
+        return getattr(vsa, name)
+    if name in ("Instruction", "LoopBlock", "TraceCompressor"):
+        import strilight.arch as a
+        return getattr(a, name)
+    if name in (
+        "ConditionExtractor",
+        "StaticFlagTracker",
+        "REGISTER_SIZES",
+        "REGISTER_HIERARCHY",
+        "REGISTER_MASKS",
+        "PHYSICAL_REGS",
+        "REG_TO_BASE",
+        "BASE_TO_REGS",
+    ):
+        import strilight.arch.x86 as x86
+        return getattr(x86, name)
+    if name in (
+        "Tracker",
+        "TraceRecord",
+        "BackwardSliceTracker",
+        "ForwardSliceTracker",
+        "Descendant",
+        "Ancestor",
+    ):
+        import strilight.extensions.tracker as t
+        return getattr(t, name)
+    if name == "BackwardTracker":
+        import strilight.extensions.tracker as t
+        return getattr(t, "BackwardSliceTracker")
+    if name == "Z3Translator":
+        from strilight.extensions.translator import Z3Translator
+        return Z3Translator
+    if name in ("SymbolicStackEngine", "StackByteCell"):
+        import strilight.extensions.stack_engine as s
+        return getattr(s, name)
+    if name in ("PathTree", "PathNode"):
+        import strilight.extensions.path_tree as p
+        return getattr(p, name)
     if name == "AnalyzerCore":
-        from strilight.engine.core import AnalyzerCore
+        from strilight.extensions.core import AnalyzerCore
         return AnalyzerCore
+    if name == "setup_hooks":
+        from strilight.extensions.hooks import setup_hooks
+        return setup_hooks
+    if name == "STOP_FUNCTIONS":
+        from strilight.extensions.stop_dict import STOP_FUNCTIONS
+        return STOP_FUNCTIONS
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = [
-    # Disassembly & Representation
-    "Instruction",
-    
-    # Loop Folding & Compression
-    "LoopBlock",
-    "TraceCompressor",
-    
-    # Abstract Interpretation (VSA) & Contracts
-    "LoopEvaluator",
-    "LoopSummary",
-    "LoopInvariantContract",
-    "AbstractState",
-    
-    # Bridge & Path Trees
-    "TrackerBridge",
-    "PathTree",
-    "PathNode",
-    
-    # Slicing & Tracking (Optional)
-    "Tracker",
-    "TraceRecord",
-    "BackwardTracker",
-    "BackwardSliceTracker",
-    "ForwardSliceTracker",
-    "Descendant",
-    "Ancestor",
-    
-    # SMT Translation (Optional)
-    "Z3Translator",
-    
-    # Emulation Backend Core (Lazy-loaded)
-    "AnalyzerCore",
-]

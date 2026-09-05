@@ -1,8 +1,8 @@
 import pytest
 import z3
 
-from strilight.engine.translator import Z3Translator
-from strilight.engine.tracker import TraceRecord
+from strilight.extensions.translator import Z3Translator
+from strilight.extensions.tracker import TraceRecord
 
 def test_ast_depth_exhaustion():
     translator = Z3Translator()

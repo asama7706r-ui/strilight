@@ -4,8 +4,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from strilight.engine.tracker import TraceRecord
-from strilight.engine.loop_compressor import TraceCompressor, LoopBlock
+from strilight.extensions.tracker import TraceRecord
+from strilight.arch.loop_compressor import TraceCompressor, LoopBlock
 
 def create_mock_record(tick, addr, mnemonic="add", op_str="eax, 1"):
     record = TraceRecord(tick=tick, address=addr, size=4, mnemonic=mnemonic, op_str=op_str)
@@ -68,7 +68,7 @@ def test_trace_compressor_nested_loops():
     assert outer_body[2].address == 0x1004
 
 def test_vsa_evaluator_nested_loops():
-    from strilight.engine.vsa_evaluator import LoopEvaluator
+    from strilight.engine.vsa import LoopEvaluator
     trace = [
         create_mock_record(1, 0x1000, "add", "eax, 1"),
         LoopBlock(body=[create_mock_record(2, 0x2000, "add", "ebx, 5")], iterations=10)
@@ -87,8 +87,8 @@ def test_symbolic_nested_loops_z3_composition():
     where N_inner drives an inner polycyclic pattern [86, 85] and N_outer repeats it!
     """
     import z3
-    from strilight.engine.vsa_evaluator import LoopSummary
-    from strilight.engine.translator import Z3Translator
+    from strilight.engine.vsa import LoopSummary
+    from strilight.extensions.translator import Z3Translator
     
     # 1. Build Inner Loop Summary (Polycyclic pattern [86, 85])
     inner_sum = LoopSummary()

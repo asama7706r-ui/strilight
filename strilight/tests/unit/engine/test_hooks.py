@@ -31,8 +31,8 @@ def mock_capstone_env(monkeypatch):
     elif 'capstone.x86' in sys.modules:
         del sys.modules['capstone.x86']
 
-from strilight.engine.hooks import setup_hooks
-from strilight.engine.tracker import Tracker, TraceRecord
+from strilight.extensions.hooks import setup_hooks
+from strilight.extensions.tracker import Tracker, TraceRecord
 
 def test_setup_hooks():
     core = MagicMock()

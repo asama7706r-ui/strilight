@@ -1,4 +1,4 @@
-from strilight.engine.tracker import TraceRecord
+from strilight.extensions.tracker import TraceRecord
 
 class RecordFactory:
     @staticmethod

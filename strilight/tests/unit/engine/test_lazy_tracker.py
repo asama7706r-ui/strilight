@@ -4,7 +4,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from strilight.engine.tracker import Tracker, TraceRecord, Descendant
+from strilight.extensions.tracker import Tracker, TraceRecord, Descendant
 
 def create_mock_record(tick, addr, mnemonic, op_str, regs_read=None, regs_write=None, mem_read=None, mem_write=None):
     r = TraceRecord(tick=tick, address=addr, size=4, mnemonic=mnemonic, op_str=op_str)

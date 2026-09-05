@@ -1,5 +1,5 @@
 import pytest
-from strilight.engine.stop_dict import STOP_FUNCTIONS
+from strilight.extensions.stop_dict import STOP_FUNCTIONS
 
 def test_stop_dict():
     assert isinstance(STOP_FUNCTIONS, dict)

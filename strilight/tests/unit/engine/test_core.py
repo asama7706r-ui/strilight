@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 import speakeasy
 import speakeasy.config as cfg
-from strilight.engine.core import AnalyzerCore
+from strilight.extensions.core import AnalyzerCore
 
 
 @pytest.fixture(autouse=True)

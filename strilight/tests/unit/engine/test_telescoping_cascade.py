@@ -6,7 +6,7 @@ from strilight.engine.vsa.models import (
     TelescopingCascade,
     LoopInvariantContract,
 )
-from strilight.engine.translator import Z3Translator
+from strilight.extensions.translator import Z3Translator
 
 
 def test_telescoping_cascade_partition_of_unity():

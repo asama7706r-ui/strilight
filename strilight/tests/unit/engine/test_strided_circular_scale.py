@@ -1,8 +1,8 @@
 import z3
 import pytest
-from strilight.engine.vsa_evaluator import LoopSummary
-from strilight.engine.translator import Z3Translator
-from strilight.pruning.interval import StridedInterval
+from strilight.engine.vsa import LoopSummary
+from strilight.extensions.translator import Z3Translator
+from strilight.engine.domains import StridedInterval
 
 
 def test_strided_circular_one_million_iterations():

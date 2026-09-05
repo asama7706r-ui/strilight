@@ -6,10 +6,10 @@ app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, os.path.join(app_dir, 'speakeasy'))
 sys.path.append(app_dir)
 
-from strilight.engine.core import AnalyzerCore
-from strilight.engine.hooks import setup_hooks
-from strilight.engine.tracker import Descendant
-from strilight.engine.translator import Z3Translator
+from strilight.extensions.core import AnalyzerCore
+from strilight.extensions.hooks import setup_hooks
+from strilight.extensions.tracker import Descendant
+from strilight.extensions.translator import Z3Translator
 
 def main():
     target_exe = r"D:\work_app\MyApp\crackme_boss.exe"

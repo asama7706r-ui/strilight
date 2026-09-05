@@ -7,8 +7,8 @@ Verifies:
 """
 
 import pytest
-from strilight.engine.vsa_evaluator import LoopSummary, LoopInvariantContract
-from strilight.engine.instruction import Instruction
+from strilight.engine.vsa import LoopSummary, LoopInvariantContract
+from strilight.arch.instruction import Instruction
 
 
 def test_loop_invariant_contract_formulas():

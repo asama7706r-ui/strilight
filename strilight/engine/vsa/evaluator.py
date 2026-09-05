@@ -2,12 +2,12 @@ import copy
 import logging
 from typing import Optional, List, Any
 from strilight.engine.abstract_state import AbstractState
-from strilight.pruning.interval import Interval, DisjointIntervalSet
-from strilight.engine.loop_compressor import LoopBlock
-from strilight.engine.tracker_bridge import TrackerBridge
+from strilight.engine.domains import Interval, DisjointIntervalSet
+from strilight.arch.loop_compressor import LoopBlock
+from strilight.arch.x86.conditions import ConditionExtractor
 from strilight.engine.vsa.models import LoopSummary
-from strilight.engine.vsa.state_ops import get_operand_list
-from strilight.engine.vsa.dispatcher import VSAInstructionDispatcher
+from strilight.arch.x86.state_ops import get_operand_list
+from strilight.arch.x86.dispatcher import VSAInstructionDispatcher
 from strilight.engine.vsa.symbolic import SymbolicInductionAnalyzer
 
 logger = logging.getLogger("strilight.engine.vsa.evaluator")
@@ -247,8 +247,8 @@ class LoopEvaluator:
                                 summary.direct_deltas[reg_name] = sd[0]
                                 logger.debug("Extracted Direct Outer Delta for %s: %s", reg_name, sd[0])
 
-        # Step 4: Delegate ALL control flow and condition analysis to the tracking facade
-        cond_str, exit_records = TrackerBridge.evaluate_loop_exit(loop_block, induction_vars=set(summary.deltas.keys()))
+        # Step 4: Extract exit conditions via ConditionExtractor
+        cond_str, exit_records = ConditionExtractor.extract_loop_exit(loop_block, induction_vars=set(summary.deltas.keys()))
         if cond_str:
             summary.exit_condition = cond_str
             summary.exit_records = exit_records

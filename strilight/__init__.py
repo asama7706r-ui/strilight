@@ -8,7 +8,7 @@ import logging
 import sys
 from typing import List, Union, Optional
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Module-level logger with default NullHandler (zero unwanted stdout noise when imported)
 logger = logging.getLogger("strilight")
@@ -42,27 +42,57 @@ def enable_logging(level: Union[int, str] = logging.INFO, stream=None):
 
 
 # Core abstractions
-from strilight.engine.instruction import Instruction
-from strilight.engine.loop_compressor import LoopBlock, TraceCompressor
-from strilight.engine.vsa_evaluator import LoopEvaluator, LoopSummary, LoopInvariantContract
-from strilight.engine.tracker_bridge import TrackerBridge
-from strilight.pruning.interval import Interval, StridedInterval, DisjointIntervalSet
+from strilight.engine.vsa import LoopEvaluator, LoopSummary, LoopInvariantContract
+from strilight.engine.domains import Interval, StridedInterval, DisjointIntervalSet
+from strilight.frontend import SourceLifter, CodeGenerator, accelerate, accelerate_c_source
 
-# Optional modules (imported safely)
+# Optional low-level architecture abstractions
 try:
-    from strilight.engine.tracker import Tracker, TraceRecord, BackwardTracker
+    from strilight.arch import Instruction, LoopBlock, TraceCompressor
+    from strilight.arch.x86 import ConditionExtractor, StaticFlagTracker
 except ImportError:
-    pass
+    Instruction = None  # type: ignore
+    LoopBlock = None  # type: ignore
+    TraceCompressor = None  # type: ignore
+    ConditionExtractor = None  # type: ignore
+    StaticFlagTracker = None  # type: ignore
 
-try:
-    from strilight.engine.translator import Z3Translator
-except ImportError:
-    pass
-
-try:
-    from strilight.engine.stack_engine import SymbolicStackEngine, StackByteCell
-except ImportError:
-    pass
+def __getattr__(name: str):
+    """
+    Lazy load optional extension modules on demand (PEP 562).
+    """
+    try:
+        if name in (
+            "Tracker",
+            "TraceRecord",
+            "BackwardSliceTracker",
+            "ForwardSliceTracker",
+            "Descendant",
+            "Ancestor",
+        ):
+            import strilight.extensions.tracker as t
+            return getattr(t, name)
+        if name == "BackwardTracker":
+            import strilight.extensions.tracker as t
+            return getattr(t, "BackwardSliceTracker")
+        if name == "Z3Translator":
+            from strilight.extensions.translator import Z3Translator
+            return Z3Translator
+        if name in ("SymbolicStackEngine", "StackByteCell"):
+            import strilight.extensions.stack_engine as s
+            return getattr(s, name)
+        if name == "AnalyzerCore":
+            from strilight.extensions.core import AnalyzerCore
+            return AnalyzerCore
+        if name == "setup_hooks":
+            from strilight.extensions.hooks import setup_hooks
+            return setup_hooks
+        if name == "AngrBridge":
+            from strilight.extensions.angr_bridge import AngrBridge
+            return AngrBridge
+    except ImportError as e:
+        raise AttributeError(f"Optional extension module {name!r} is not installed or not included in this distribution: {e}")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # =============================================================================
@@ -104,11 +134,13 @@ def analyze(code_bytes: bytes, iterations: int = 1000, base_address: int = 0x100
 
 
 __all__ = [
-    # High-Level Facade Functions
+    # High-Level Facade Functions & Decorators
     "disassemble",
     "compress",
     "evaluate",
     "analyze",
+    "accelerate",
+    "accelerate_c_source",
     
     # Logging Configuration
     "logger",
@@ -122,10 +154,13 @@ __all__ = [
     "LoopEvaluator",
     "LoopSummary",
     "LoopInvariantContract",
-    "TrackerBridge",
+    "ConditionExtractor",
+    "StaticFlagTracker",
     "Interval",
     "StridedInterval",
     "DisjointIntervalSet",
     "SymbolicStackEngine",
     "StackByteCell",
+    "SourceLifter",
+    "CodeGenerator",
 ]

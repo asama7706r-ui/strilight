@@ -1,8 +1,15 @@
 import z3
 import logging
 from typing import Dict, List, Any, Optional, Tuple, Callable, Set
-from strilight.engine.vsa.models import LoopSummary, TelescopingCascade, RegisterLoopExpr
-from strilight.engine.x86_defs import REG_TO_BASE
+from strilight.engine.vsa.models import (
+    LoopSummary,
+    TelescopingCascade,
+    VariableLoopExpr,
+    RegisterLoopExpr,
+    SpatiotemporalTickModel,
+    SpatiotemporalCoordinate,
+)
+from strilight.arch.x86.defs import REG_TO_BASE
 
 logger = logging.getLogger("strilight.engine.vsa.smt_translator")
 
@@ -45,6 +52,58 @@ class LoopSMTTranslator:
         X(N) = A(N) * X_0 + [ Delta_scalar(N) + Delta_poly(N) + Delta_tele(N) + Delta_geom(N) ]
     with neutral identity elements (0 for addition, 1 for multiplication).
     """
+
+    @staticmethod
+    def build_spatiotemporal_tick_ast(
+        tick_model: SpatiotemporalTickModel,
+        N_ast: z3.BitVecRef,
+        xi_ast: Optional[z3.BitVecRef] = None,
+        branch_conds: Optional[Dict[str, z3.BoolRef]] = None,
+        bit_size: int = 64
+    ) -> z3.BitVecRef:
+        """
+        Rule 12.a: Builds the closed-form SMT AST for a 2D Space-Time Tick:
+            Tick(N, xi) = T_0 + N * T_stride + xi + sum(If(Branch_j, Delta_xi_j, 0))
+        """
+        T_0_val = z3.BitVecVal(tick_model.T_0, bit_size)
+        stride_val = z3.BitVecVal(tick_model.inter_stride, bit_size)
+        
+        base_ast = T_0_val + (N_ast * stride_val)
+        if xi_ast is not None:
+            if xi_ast.size() < bit_size:
+                xi_ast = z3.ZeroExt(bit_size - xi_ast.size(), xi_ast)
+            elif xi_ast.size() > bit_size:
+                xi_ast = z3.Extract(bit_size - 1, 0, xi_ast)
+            base_ast = base_ast + xi_ast
+
+        if branch_conds and tick_model.branch_penalties:
+            for branch_name, penalty in tick_model.branch_penalties.items():
+                if branch_name in branch_conds:
+                    b_cond = branch_conds[branch_name]
+                    pen_val = z3.BitVecVal(penalty, bit_size)
+                    zero_val = z3.BitVecVal(0, bit_size)
+                    base_ast = base_ast + z3.If(b_cond, pen_val, zero_val)
+
+        return z3.simplify(base_ast)
+
+    @staticmethod
+    def build_epoch_anchor_ast(
+        tick_model: SpatiotemporalTickModel,
+        N_ast: z3.BitVecRef,
+        bit_size: int = 64
+    ) -> Tuple[z3.BitVecRef, z3.BoolRef]:
+        """
+        Rule 12.d: Builds the Loop Exit Epoch Anchor in SMT:
+            T_epoch == T_0 + N * T_stride
+        Returns (T_epoch_symbolic_ast, anchor_equality_constraint).
+        """
+        T_0_val = z3.BitVecVal(tick_model.T_0, bit_size)
+        stride_val = z3.BitVecVal(tick_model.inter_stride, bit_size)
+        epoch_calc = T_0_val + (N_ast * stride_val)
+        
+        T_epoch_sym = z3.BitVec(f"T_epoch", bit_size)
+        anchor_eq = (T_epoch_sym == epoch_calc)
+        return T_epoch_sym, z3.simplify(anchor_eq)
 
     @staticmethod
     def build_polycyclic_delta_ast(
@@ -314,7 +373,7 @@ class LoopSMTTranslator:
                 continue
 
             # Retrieve the matched Universal AST Expression
-            matched_expr: Optional[RegisterLoopExpr] = None
+            matched_expr: Optional[VariableLoopExpr] = None
             for alias in raw_aliases:
                 if alias in summary.register_exprs:
                     matched_expr = summary.register_exprs[alias]

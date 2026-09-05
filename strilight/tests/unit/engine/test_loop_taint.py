@@ -5,9 +5,9 @@ import z3
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from strilight.engine.tracker import Tracker, TraceRecord, Descendant
-from strilight.engine.translator import Z3Translator
-from strilight.engine.loop_compressor import TraceCompressor
+from strilight.extensions.tracker import Tracker, TraceRecord, Descendant
+from strilight.extensions.translator import Z3Translator
+from strilight.arch.loop_compressor import TraceCompressor
 
 def create_mock_record(tick, addr, mnemonic, op_str, regs_read=None, regs_write=None):
     r = TraceRecord(tick=tick, address=addr, size=4, mnemonic=mnemonic, op_str=op_str)

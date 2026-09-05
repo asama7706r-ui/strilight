@@ -4,8 +4,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from strilight.engine.tracker import TraceRecord
-from strilight.engine.loop_compressor import TraceCompressor, LoopBlock
+from strilight.extensions.tracker import TraceRecord
+from strilight.arch.loop_compressor import TraceCompressor, LoopBlock
 
 def create_trace(addresses):
     return [TraceRecord(tick=i+1, address=addr, size=4, mnemonic="mock", op_str="mock") for i, addr in enumerate(addresses)]

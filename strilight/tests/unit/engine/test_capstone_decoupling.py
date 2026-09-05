@@ -8,11 +8,11 @@ Tests:
 
 import pytest
 import capstone
-from strilight.engine.instruction import Instruction
-from strilight.engine.loop_compressor import LoopBlock, TraceCompressor
-from strilight.engine.vsa_evaluator import LoopEvaluator
-from strilight.engine.tracker_bridge import TrackerBridge
-from strilight.pruning.interval import Interval
+from strilight.arch.instruction import Instruction
+from strilight.arch.loop_compressor import LoopBlock, TraceCompressor
+from strilight.engine.vsa import LoopEvaluator
+from strilight.arch.x86.conditions import ConditionExtractor
+from strilight.engine.domains import Interval
 
 
 def test_instruction_from_capstone():
@@ -78,19 +78,19 @@ def test_core_loop_evaluation_from_capstone_bytes():
     assert "jl" in summary.exit_condition
 
 
-def test_custom_tracer_registration_on_bridge():
+def test_custom_tracer_registration_on_extractor():
     """
-    Tests registering an external custom tracer on TrackerBridge.
+    Tests registering an external custom tracer on ConditionExtractor.
     """
     class MockCustomTracer:
         def evaluate_loop_exit(self, loop_block, induction_vars):
             return "CUSTOM_EXIT_CONDITION", ["MOCK_RECORD"]
             
-    TrackerBridge.register_tracer(MockCustomTracer())
+    ConditionExtractor.register_tracer(MockCustomTracer())
     
-    cond_str, records = TrackerBridge.evaluate_loop_exit(LoopBlock(body=[], iterations=10))
+    cond_str, records = ConditionExtractor.extract_loop_exit(LoopBlock(body=[], iterations=10))
     assert cond_str == "CUSTOM_EXIT_CONDITION"
     assert records == ["MOCK_RECORD"]
     
     # Reset custom tracer
-    TrackerBridge.register_tracer(None)
+    ConditionExtractor.register_tracer(None)

@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 from unittest.mock import MagicMock
 from unittest.mock import MagicMock
 import pytest
-from strilight.engine.tracker import Tracker, TraceRecord, Descendant, Ancestor, BackwardSliceTracker
+from strilight.extensions.tracker import Tracker, TraceRecord, Descendant, Ancestor, BackwardSliceTracker
 
 def test_trace_record():
     r = TraceRecord(tick=1, address=0x1000, mnemonic="mov", op_str="rax, 1", size=5)

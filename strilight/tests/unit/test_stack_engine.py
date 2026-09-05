@@ -1,6 +1,6 @@
 import pytest
 import z3
-from strilight.engine.stack_engine import SymbolicStackEngine, StackByteCell
+from strilight.extensions.stack_engine import SymbolicStackEngine, StackByteCell
 
 
 def test_stack_push_pop_concrete():

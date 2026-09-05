@@ -1,7 +1,7 @@
 import z3
 import pytest
-from strilight.engine.vsa_evaluator import LoopSummary
-from strilight.engine.translator import Z3Translator
+from strilight.engine.vsa import LoopSummary
+from strilight.extensions.translator import Z3Translator
 
 
 def test_geometric_shift_summary_translation():

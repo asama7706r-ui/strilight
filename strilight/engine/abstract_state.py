@@ -1,5 +1,5 @@
 from typing import Dict, List, Tuple, Union
-from strilight.pruning.interval import Interval, StridedInterval, DisjointIntervalSet
+from strilight.engine.domains import Interval, StridedInterval, DisjointIntervalSet
 
 class StridedMemoryMap:
     """
