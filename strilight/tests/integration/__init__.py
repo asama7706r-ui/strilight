@@ -1,1 +1,0 @@
-# strilight.tests.integration

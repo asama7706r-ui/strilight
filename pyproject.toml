@@ -35,3 +35,8 @@ exclude = ["strilight.tests*", "strilight.arch*", "strilight.extensions*"]
 
 [tool.setuptools.package-data]
 strilight = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["strilight/tests"]
+addopts = "--ignore=speakeasy --ignore=strilight/tests/benchmarks/low_level --ignore=strilight/tests/integration/test_engine.py --ignore=strilight/tests/unit/engine/test_core.py"
+

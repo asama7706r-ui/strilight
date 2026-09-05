@@ -1,4 +1,4 @@
-# 🌟 Strilight (v0.2.0)
+# Strilight (v0.2.0)
 
 <p align="center">
   <strong>High-Performance Algebraic Loop Lifting & Exact Rational Recurrence Engine for Python and C</strong>
@@ -15,7 +15,7 @@
 
 ---
 
-## ⚡ Overview: Why Iterate When You Can Solve?
+## Overview: Why Iterate When You Can Solve?
 
 Traditional compilers, runtimes, and JIT engines (such as GCC, Clang, PyPy, or Numba) treat loops as repetitive control-flow sequences, executing instructions step-by-step:
 $$\text{Runtime Cost} = \mathcal{O}(N)$$
@@ -27,7 +27,7 @@ When $N = 10^6$ or $10^9$, sequential execution incurs billions of CPU cycles. *
 
 ---
 
-## 🔬 Key Architectural Highlights
+## Architectural Foundations
 
 ### 1. Exact Rational Arithmetic over $\mathbb{Q}$ (Zero Precision Loss)
 Floating-point arithmetic introduces cumulative truncation errors ($1/3 \times 3 \approx 0.9999999999999999$). Strilight performs affine induction and stride analysis over the field of rational numbers $\mathbb{Q}$:
@@ -37,8 +37,14 @@ Floating-point arithmetic introduces cumulative truncation errors ($1/3 \times 3
 ### 2. Multi-Variable Coupled Recurrence Systems ($\mathcal{O}(\log N)$)
 Variables that mutually depend on each other (e.g., physical simulations where position depends on velocity and velocity depends on acceleration) are automatically extracted into a **Variable Coupling Matrix** ($\mathbf{A}$). Strilight performs binary exponentiation on $\mathbf{A}$, executing millions of iterations in under **2 nanoseconds**.
 
-### 3. Transparent `@accelerate` Decorator for Python
-Zero code rewrite required. Decorate any standard Python function with `@accelerate`; Strilight inspects the AST at load time, detects loop constructs, replaces them in-place with closed-form mathematical kernels, and executes at hardware speed:
+### 3. Transparent `@accelerate` Decorator (How It Works)
+Decorating any standard Python function with `@accelerate` executes an automated pipeline at function definition time (zero per-call runtime analysis overhead):
+1. **AST Extraction**: Inspects the function AST, identifies `for` loop constructs, and extracts induction variables.
+2. **Closed-Form Synthesis**: Translates the loop into equivalent closed-form recurrence models or binary matrix exponentiation kernels.
+3. **In-Place Splicing**: Replaces the loop AST nodes in-place, compiles the callable into memory, and injects runtime globals (`Fraction`, `math`) without polluting module namespaces.
+4. **Contract Reflection**: Attaches `_loop_summary` and `_invariant_contract` to the compiled function object, enabling downstream compilers and verification tools to inspect the underlying transition matrix $\mathbf{A}$.
+5. **Graceful Fallback**: If non-linear indexing or unsupported dynamic calls are encountered, Strilight emits a diagnostic warning and cleanly falls back to native execution without crashing.
+
 ```python
 from strilight import accelerate
 
@@ -53,18 +59,39 @@ def compute_simulation(steps: int) -> int:
 result = compute_simulation(100_000_000)
 ```
 
-### 4. Direct C Source Directives (`#pragma strilight`)
-For C and C++ projects, Strilight provides an OpenMP-style pragma pipeline:
-* `#pragma strilight accelerate`: Replaces C `for` loops with synthesized closed-form C statements.
-* `#pragma strilight fuse`: Automatically merges consecutive loops that share iteration spaces into a single unified execution kernel.
+### 4. Contract-Guided C Source Directives (`#pragma strilight`)
+Unlike Python's dynamic reflection, C code transformations in Strilight strictly follow an explicit **Developer-Contract Model** via OpenMP-style pragma directives. The engine never mutates C source code implicitly; transformations occur solely when directed by explicit developer contract clauses (`contract`, `target`, `include`, `model`):
+* `#pragma strilight accelerate`: Explicitly authorizes Strilight to lift the annotated C `for` loop into an equivalent closed-form mathematical expression.
+* `#pragma strilight fuse`: Explicit developer directive instructing Strilight to fuse designated adjacent loops sharing identical iteration domains into a unified $\mathcal{O}(\log N)$ binary matrix recurrence kernel.
 
-### 5. Array Slice Induction & Cyclic Table Lookups
+```c
+// Example of contract-guided multi-loop fusion via developer directive
+int simulate_motion(int n) {
+    int pos = 0, vel = 10;
+
+    #pragma strilight fuse
+    for (int i = 0; i < n; i++) {
+        pos += vel;
+    }
+    for (int i = 0; i < n; i++) {
+        vel += 2;
+    }
+    return pos;
+}
+```
+
+### 5. Cross-File Symbol & Constant Resolution (`CrossFileResolver`)
+Numerical simulations frequently define parameters in separate header files or configuration modules. Strilight's `CrossFileResolver`:
+* Statically traces local module imports and C `#include` / `#define` directives.
+* Evaluates literal constant expressions (e.g. `SOLAR_MASS = 4 * PI * PI`) across files via AST evaluation without executing arbitrary runtime code or using unsafe `eval`.
+
+### 6. Array Slice Induction & Cyclic Table Lookups
 * **Cyclic Array Lookup**: Lifts cyclic table lookups (`table[i % P]`) into precomputed prefix-sum closed formulas in $\mathcal{O}(1)$.
 * **In-Place Array Slice Mutation**: Classifies constant fills and arithmetic progressions, synthesizing optimal hardware `memset` calls or vector slice assignments (`arr[:N] = ...`).
 
 ---
 
-## 📊 Benchmark Results
+## Benchmark Results
 
 Evaluated across high-iteration numerical loops, comparing native execution against Strilight acceleration:
 
@@ -77,22 +104,49 @@ Evaluated across high-iteration numerical loops, comparing native execution agai
 
 ---
 
-## 🛠️ Architecture & Pipeline
+## Architecture & Execution Pipeline
 
 ```mermaid
 flowchart TD
     SRC["Source Code (Python / C)"] --> LIFTER["SourceLifter: AST & Pragma Parser"]
-    LIFTER --> VSA["Algebraic Induction Engine: models.py"]
+    LIFTER --> RESOLV["CrossFileResolver: Static Import Resolution"]
+    RESOLV --> VSA["Algebraic Induction Engine: models.py"]
     VSA --> MATRIX["VariableCouplingMatrix: System Transition Matrix A"]
     VSA --> QFIELD["Exact Rational Domain over Q: AffineExpr"]
-    VSA --> REDUCE["Schur Reduction & Block-Diagonal Decomposition"]
     REDUCE --> CODEGEN["CodeGenerator: C / Python Synthesis"]
+    VSA --> REDUCE["Schur Reduction & Block-Diagonal Decomposition"]
     CODEGEN --> OUT["O(1) / O(log N) Executable Kernel"]
 ```
 
 ---
 
-## 📦 Installation
+## Key Applications & Real-World Use Cases
+
+Strilight addresses computational bottlenecks across scientific, engineering, and financial domains:
+
+### 1. Scientific & Astrophysical Simulations
+* **Domain**: N-Body celestial mechanics, orbital state propagation, and multi-particle kinematic cascades.
+* **Advantage**: Bypasses iterative $\mathcal{O}(N)$ numerical time-stepping. Evaluates the state vector at arbitrary future epoch $T$ directly in $\mathcal{O}(1)$ or $\mathcal{O}(\log N)$, eliminating cumulative numerical drift via exact rational arithmetic over $\mathbb{Q}$.
+
+### 2. Quantitative Finance & Actuarial Analysis
+* **Domain**: Compound interest accrual streams, annuities, fixed-income modeling, and multi-period asset depreciation.
+* **Advantage**: Replaces multi-thousand-step simulation loops with exact closed-form evaluations in microseconds. Guarantees 100% bit-exact rational precision, eliminating floating-point rounding discrepancies prohibited under financial regulations.
+
+### 3. Real-Time Graphics & Game Engine Physics
+* **Domain**: Particle emitters, projectile trajectories, and continuous camera animations.
+* **Advantage**: Offloads heavy sequential loops from the CPU during real-time 60/120 FPS frame cycles, collapsing iterative accumulator passes into single-cycle algebraic evaluations executing in sub-nanoseconds.
+
+### 4. Embedded Systems & Hard Real-Time Computing (IoT / Edge)
+* **Domain**: Resource-constrained microcontrollers (ARM Cortex-M, RISC-V, ESP32) operating under strict power and clock limitations.
+* **Advantage**: Collapsing billion-iteration cycles into an instantaneous $\mathcal{O}(1)$ arithmetic statement delivers substantial energy savings and guarantees bounded, deterministic execution deadlines.
+
+### 5. Compilers, Static Analysis & Formal Verification
+* **Domain**: Invariant inference, symbolic execution, and automated theorem proving (SMT/Z3).
+* **Advantage**: Synthesizes formal mathematical induction contracts (`LoopInvariantContract`) without memory-intensive loop unrolling.
+
+---
+
+## Installation
 
 ### From PyPI / Wheel Distribution:
 ```bash
@@ -108,61 +162,27 @@ pip install -e .
 
 ---
 
-## 💡 Quick Examples
+## Verification & Examples
 
-### Example 1: Coupled Multi-Variable System (Python)
-```python
-import strilight as sl
-
-@sl.accelerate
-def coupled_system(n: int):
-    x, y = 10, 20
-    for _ in range(n):
-        x = x + 2 * y + 5
-        y = y + 3
-    return x, y
-
-x, y = coupled_system(1_000_000)
-print(f"Solved 1M iterations in O(log N): x={x}, y={y}")
-```
-
-### Example 2: Accelerating C Source Loops
-```python
-import strilight as sl
-
-c_code = """
-int simulate(int n) {
-    int pos = 0, vel = 10;
-    #pragma strilight accelerate
-    for (int i = 0; i < n; i++) {
-        pos += vel;
-        vel += 2;
-    }
-    return pos;
-}
-"""
-
-accelerated_c = sl.accelerate_c_source(c_code)
-print(accelerated_c)
-# Emits direct O(1) closed-form formula replacing the loop body!
-```
-
----
-
-## 🧪 Testing & Verification
-
-Strilight is backed by an extensive verification test suite:
+Execute the standalone verification test suite and practical examples:
 ```bash
-pytest strilight/tests/unit/
-# 252 passed in 3.0s
+# Python recurrence acceleration:
+python examples/01_python_recurrence_acceleration.py
+
+# Jovian planetary N-body celestial simulation benchmark:
+python examples/02_nbody_simulation_benchmark.py
+
+# C Developer Contract & pragma acceleration suite:
+python examples/c/run_c_acceleration.py
 ```
 
 ---
 
-## 📄 License
+## Licensing & Dual-License Model
 
 **Strilight** is released under a **Dual-Licensing Model**:
 * **Open Source (GNU GPLv3)**: Free for academic research, open-source projects, and personal experimentation.
 * **Commercial License**: For integration into proprietary commercial products or enterprise pipelines without GPL copyleft obligations.
 
 Contact: `asama7706r@gmail.com`
+

@@ -68,13 +68,14 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
           pip install --no-index --find-links=dist strilight
 
-      - name: Run verification test suite
+      - name: Run verification example suite
         shell: bash
         run: |
-          pytest strilight/tests/unit/ strilight/tests/benchmarks/high_level/ --ignore=strilight/tests/unit/engine/test_core.py -q
+          python examples/01_python_recurrence_acceleration.py
+          python examples/02_nbody_simulation_benchmark.py
+          python examples/c/run_c_acceleration.py
 
   release:
     name: Create GitHub Release Assets

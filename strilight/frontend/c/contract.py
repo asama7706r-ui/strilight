@@ -11,7 +11,7 @@ Supported clauses:
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 
 
 @dataclass
@@ -23,6 +23,13 @@ class CPragmaContract:
     include_file: Optional[str] = None
     model: Optional[str] = None
     extra_clauses: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def targets(self) -> List[str]:
+        """Returns the list of target identifiers parsed from target(...) or entities(...)."""
+        if not self.target:
+            return []
+        return [t.strip() for t in re.split(r'[,;]\s*', self.target) if t.strip()]
 
     def is_empty(self) -> bool:
         return (

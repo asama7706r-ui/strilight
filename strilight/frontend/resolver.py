@@ -182,6 +182,13 @@ class CrossFileResolver:
                 break
 
         if not target_path:
+            base_name = os.path.basename(filepath)
+            for root, _, files in os.walk(os.getcwd()):
+                if base_name in files:
+                    target_path = os.path.join(root, base_name)
+                    break
+
+        if not target_path:
             logger.debug("C file not found for constant resolution: %s", filepath)
             return {}
 
