@@ -35,6 +35,18 @@ $$
 
 ---
 
+## Design Philosophy: Developer Quality-of-Life First
+
+Strilight does not pretend to introduce esoteric magic; it is fundamentally a **developer quality-of-life tool**.
+
+In physical modeling, scientific computing, and numerical simulation, engineers frequently face a frustrating dilemma:
+* **Readable Code**: Natural, expressive equations that mirror textbook physics, but execute sluggishly when iterated millions of times.
+* **Hand-Optimized Code**: Convoluted, manually unrolled loops and obscure arithmetic shortcuts that run fast, but are brittle, difficult to debug, and obscure the underlying physics.
+
+**Strilight resolves this dilemma.** You write the physical or mathematical concept in whatever straightforward, natural syntax you prefer. Strilight inspects your loop structure, derives the exact closed-form recurrence formulas, and accelerates execution behind the scenes—preserving complete readability and simplicity in your codebase.
+
+---
+
 ## Architectural Foundations
 
 ### 1. Exact Rational Arithmetic over $\mathbb{Q}$ (Zero Precision Loss)
@@ -96,6 +108,62 @@ Numerical simulations frequently define parameters in separate header files or c
 ### 6. Array Slice Induction & Cyclic Table Lookups
 * **Cyclic Array Lookup**: Lifts cyclic table lookups (`table[i % P]`) into precomputed prefix-sum closed formulas in $\mathcal{O}(1)$.
 * **In-Place Array Slice Mutation**: Classifies constant fills and arithmetic progressions, synthesizing optimal hardware `memset` calls or vector slice assignments (`arr[:N] = ...`).
+
+### 7. How Physical & Kinematic Acceleration Works Under the Hood
+In mechanical and astrophysical simulations (e.g., $N$-body systems, orbital mechanics, particle kinematics), physical bodies frequently spend extensive periods traversing smooth, unperturbed trajectories without abrupt collisions or directional changes:
+* **Analytical Trajectory Synthesis**: When Strilight identifies that a particle or celestial body is following an unperturbed gravitational or linear trajectory, it collapses the iterative time-stepping loop into the minimal possible mathematical operations (analytical Keplerian/harmonic orbital formulation)—**without sacrificing coordinate precision**.
+* **Transition to Complex Events**: When complex events occur (discrete collisions, boundary wall impacts, or irregular multi-body couplings), execution transitions into specialized collision coupling matrices ($\mathbf{A}$) or localized simulation stages.
+* **Zero Code Risk**: Strilight is completely non-invasive. In Python, it is a single `@accelerate` decorator; in C, it is a standard `#pragma`. You can add or remove it at any time without altering your algorithm or business logic.
+* **Decisive Graceful Fallback**: If Strilight encounters a loop with unstructured side-effects, unknown external calls, or non-affine dynamics, it **decisively and cleanly halts acceleration attempts** and falls back to native execution. Your program never crashes.
+
+### 8. Working with AI Coding Assistants & Inspecting Accelerated Code
+Modern AI coding assistants (such as Claude, Gemini, GPT, or Jules) excel when operating over algebraic formulas and closed-form equations. Strilight makes it straightforward for developers and AI agents to inspect the synthesized code and mathematical contracts directly:
+
+#### Inspecting Mathematical Contracts in Python:
+```python
+from strilight import accelerate
+
+@accelerate
+def compute_energy(steps: int) -> int:
+    total = 0
+    for i in range(steps):
+        total += 15
+    return total
+
+# Execute once to trigger definition-time synthesis
+result = compute_energy(100)
+
+# Inspect the underlying mathematical contract:
+summary = compute_energy._loop_summary
+print("Extracted Induction Formulas:", summary.to_induction_formulas())
+print("Invariant Contract:", compute_energy._invariant_contract.to_dict())
+```
+
+#### Generating Standalone Accelerated C Source:
+You can pass C source code directly to `accelerate_c_source` to generate inspectable, human-readable accelerated C kernels:
+```python
+import strilight as sl
+
+c_source = """
+long long simulate(void) {
+    long long total = 0;
+    #pragma strilight accelerate target(total)
+    for (int i = 0; i < 1000000; i++) {
+        total += 42;
+    }
+    return total;
+}
+"""
+
+accelerated_c = sl.accelerate_c_source(c_source)
+print(accelerated_c)
+# Emits: total += (42LL * 1000000);
+```
+
+### 9. Realistic Expectations & The Developer Contract
+We believe in engineering transparency:
+* **No Blanket Guarantees**: Strilight does not claim that every arbitrary, unconstrained loop will magically become $\mathcal{O}(1)$. Highly irregular pointer chasing, arbitrary dynamic I/O, or non-algebraic external function calls are fundamentally non-reducible.
+* **Predictable Success**: For structured loops—scalar reductions, multi-variable linear couplings, cyclic arrays, and contract-guided loops—Strilight reliably succeeds. In C, providing explicit pragma clauses (`target`, `include`, `model`) provides deterministic transformation guarantees.
 
 ---
 
@@ -183,6 +251,17 @@ python examples/02_nbody_simulation_benchmark.py
 # C Developer Contract & pragma acceleration suite:
 python examples/c/run_c_acceleration.py
 ```
+
+## Open Source & Community Contributions
+
+The core mathematical engine of **Strilight** is 100% open source under the GNU GPLv3 license.
+
+We warmly welcome contributions from the global compiler, scientific computing, and performance engineering communities:
+* **Multi-Language Adapters**: Adding frontends for other compiled or dynamic languages (such as Rust, Julia, Fortran, or C++).
+* **Recurrence Solvers & Models**: Expanding the algebraic model library with non-linear perturbation solvers, advanced geometric transformations, or specialized symbolic matrix decomposition algorithms.
+* **Component Refinement**: Enhancing AST pattern matchers, developer pragmas, and developer experience tooling.
+
+If you are interested in contributing, feel free to open an issue or submit a pull request on [GitHub](https://github.com/asama7706r-ui/strilight)!
 
 ---
 
