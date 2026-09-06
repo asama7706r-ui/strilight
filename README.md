@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/python-3.9+-brightgreen.svg" alt="Python Version">
   <img src="https://img.shields.io/badge/complexity-O(1)%20%2F%20O(log%20N)-orange.svg" alt="Complexity">
   <img src="https://img.shields.io/badge/arithmetic-Exact%20Rational%20%E2%84%9A-purple.svg" alt="Exact Arithmetic">
-  <img src="https://img.shields.io/badge/tests-252%20passing-success.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-60%20passing-success.svg" alt="Tests">
   <img src="https://img.shields.io/badge/license-GPLv3%20%2F%20Commercial-lightgrey.svg" alt="License">
 </p>
 
@@ -240,13 +240,19 @@ pip install -e .
 
 ## Verification & Examples
 
-Execute the standalone verification test suite and practical examples:
+Execute the test suite and reproducible benchmarks:
 ```bash
+# Run the 60-test unit and induction verification suite:
+pytest
+
 # Python recurrence acceleration:
 python examples/01_python_recurrence_acceleration.py
 
 # Jovian planetary N-body celestial simulation benchmark:
 python examples/02_nbody_simulation_benchmark.py
+
+# Coupled 4x4 linear matrix recurrence benchmark (O(N) -> O(log N) -> O(1)):
+python examples/03_coupled_matrix_benchmark.py
 
 # C Developer Contract & pragma acceleration suite:
 python examples/c/run_c_acceleration.py
