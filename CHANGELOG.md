@@ -44,12 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-* **Architectural Decoupling**:
-  * Decoupled the pure mathematical core (`strilight.engine`) from hardware-specific and low-level dynamic emulation modules.
-  * Relocated dynamic tracing, symbolic stack handling, and solver translation components into `strilight.extensions`, loading them lazily via PEP 562 (`__getattr__`) to prevent unnecessary import-time overhead.
-  * Extracted instruction definitions, disassemblers, and machine register maps into `strilight.arch`.
+* **Architectural Modularity**:
+  * Structured the pure mathematical engine (`strilight.engine`) and language frontends (`strilight.frontend`) for seamless zero-dependency source lifting.
+  * Ensured complete standalone execution with zero mandatory external compilation or emulation dependencies.
 * **Mathematical Core Generalization**:
-  * Replaced register-bound IR abstractions with language-agnostic models: `RegisterLoopExpr` $\to$ `VariableLoopExpr`, and `RegisterCouplingMatrix` $\to$ `VariableCouplingMatrix`.
+  * Designed language-agnostic recurrence models: `VariableLoopExpr` and `VariableCouplingMatrix`.
   * Unified `LoopSummary.var_exprs` as the centralized store for symbolic induction expressions.
 * **Abstract Domains Modernization (`strilight.engine.domains`)**:
   * Consolidated `Interval`, `StridedInterval`, and `DisjointIntervalSet` under a unified domains package.
