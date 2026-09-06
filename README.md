@@ -18,12 +18,20 @@
 ## Overview: Why Iterate When You Can Solve?
 
 Traditional compilers, runtimes, and JIT engines (such as GCC, Clang, PyPy, or Numba) treat loops as repetitive control-flow sequences, executing instructions step-by-step:
-$$\text{Runtime Cost} = \mathcal{O}(N)$$
+
+$$
+\text{Runtime Cost} = \mathcal{O}(N)
+$$
 
 When $N = 10^6$ or $10^9$, sequential execution incurs billions of CPU cycles. **Strilight** fundamentally re-engineers loop execution through **Symbolic Algebraic Lifting**:
-* It statically inspects the loop body and formulates its mathematical state transition matrix:
-  $$\vec{\mathbf{X}}(N) = \mathbf{A}^N \cdot \vec{\mathbf{X}}_0 + \sum_{k=0}^{N-1} \mathbf{A}^{N-1-k} \vec{\mathbf{B}}$$
-* It solves the recurrence system in closed form, reducing execution time from **$\mathcal{O}(N)$** to **$\mathcal{O}(1)$** (for scalar/periodic/telescoping series) or **$\mathcal{O}(\log N)$** (via fast binary matrix exponentiation).
+
+1. **State Transition Formulation**: It statically inspects the loop body and formulates its mathematical state transition matrix:
+
+$$
+\vec{\mathbf{X}}(N) = \mathbf{A}^N \cdot \vec{\mathbf{X}}_0 + \sum_{k=0}^{N-1} \mathbf{A}^{N-1-k} \vec{\mathbf{B}}
+$$
+
+2. **Closed-Form Solution**: It solves the recurrence system in closed form, reducing execution time from **$\mathcal{O}(N)$** to **$\mathcal{O}(1)$** (for scalar/periodic/telescoping series) or **$\mathcal{O}(\log N)$** (via fast binary matrix exponentiation).
 
 ---
 
