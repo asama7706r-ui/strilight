@@ -1,8 +1,8 @@
 """
 Strilight Value Set Analysis (VSA) Engine (strilight.engine.vsa)
 ================================================================
-Mathematical models, single-pass symbolic induction, loop evaluation,
-and SMT closed-form translation.
+Pure mathematical models, universal loop recurrence ASTs, and SMT closed-form translation.
+This package is strictly mathematical and architecture-agnostic.
 """
 
 from strilight.engine.vsa.models import (
@@ -33,8 +33,6 @@ from strilight.engine.vsa.models import (
     LoopInvariantContract,
     LoopSummary,
 )
-from strilight.engine.vsa.symbolic import SymbolicInductionAnalyzer
-from strilight.engine.vsa.evaluator import LoopEvaluator
 from strilight.engine.vsa.smt_translator import LoopSMTTranslator, LoopStateUpdate
 
 __all__ = [
@@ -64,8 +62,6 @@ __all__ = [
     "OrbitPerturbationSystem",
     "LoopInvariantContract",
     "LoopSummary",
-    "SymbolicInductionAnalyzer",
-    "LoopEvaluator",
     "LoopSMTTranslator",
     "LoopStateUpdate",
 ]

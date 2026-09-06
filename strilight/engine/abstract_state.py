@@ -86,6 +86,15 @@ class AbstractState:
     def set_register(self, reg_name: str, value: DisjointIntervalSet):
         self.registers[reg_name] = value
 
+    # Generic mathematical variable aliases
+    get_variable = get_register
+    set_variable = set_register
+
+    @property
+    def variables(self) -> Dict[str, DisjointIntervalSet]:
+        """Generic alias for abstract variables/registers."""
+        return self.registers
+
     def get_flag(self, flag_name: str) -> Interval:
         if flag_name not in self.flags:
             # TOP for 1 bit is [0, 1] (Unknown)

@@ -6,7 +6,7 @@ A lightweight, high-performance abstract interpretation and symbolic loop-liftin
 
 import logging
 import sys
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Any
 
 __version__ = "0.2.0"
 
@@ -42,26 +42,29 @@ def enable_logging(level: Union[int, str] = logging.INFO, stream=None):
 
 
 # Core abstractions
-from strilight.engine.vsa import LoopEvaluator, LoopSummary, LoopInvariantContract
+from strilight.engine.vsa import LoopSummary, LoopInvariantContract
 from strilight.engine.domains import Interval, StridedInterval, DisjointIntervalSet
 from strilight.frontend import SourceLifter, CodeGenerator, accelerate, accelerate_c_source
 
-# Optional low-level architecture abstractions
-try:
-    from strilight.arch import Instruction, LoopBlock, TraceCompressor
-    from strilight.arch.x86 import ConditionExtractor, StaticFlagTracker
-except ImportError:
-    Instruction = None  # type: ignore
-    LoopBlock = None  # type: ignore
-    TraceCompressor = None  # type: ignore
-    ConditionExtractor = None  # type: ignore
-    StaticFlagTracker = None  # type: ignore
 
 def __getattr__(name: str):
     """
-    Lazy load optional extension modules on demand (PEP 562).
+    Lazy load optional extension and architecture modules on demand (PEP 562).
+    Keeps core mathematical engine purely isolated from binary dependencies upon import.
     """
     try:
+        if name in ("LoopEvaluator", "X86LoopEvaluator"):
+            from strilight.arch.x86.evaluator import LoopEvaluator
+            return LoopEvaluator
+        if name in ("SymbolicInductionAnalyzer", "X86SymbolicInductionAnalyzer"):
+            from strilight.arch.x86.symbolic import SymbolicInductionAnalyzer
+            return SymbolicInductionAnalyzer
+        if name in ("Instruction", "LoopBlock", "TraceCompressor"):
+            import strilight.arch as a
+            return getattr(a, name)
+        if name in ("ConditionExtractor", "StaticFlagTracker"):
+            import strilight.arch.x86 as x86
+            return getattr(x86, name)
         if name in (
             "Tracker",
             "TraceRecord",
@@ -91,7 +94,7 @@ def __getattr__(name: str):
             from strilight.extensions.angr_bridge import AngrBridge
             return AngrBridge
     except ImportError as e:
-        raise AttributeError(f"Optional extension module {name!r} is not installed or not included in this distribution: {e}")
+        raise AttributeError(f"Optional module {name!r} could not be loaded: {e}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -99,24 +102,28 @@ def __getattr__(name: str):
 # High-Level Facade API (Instant Developer Experience)
 # =============================================================================
 
-def disassemble(code_bytes: bytes, base_address: int = 0x1000, bit_mode: int = 64) -> List[Instruction]:
+def disassemble(code_bytes: bytes, base_address: int = 0x1000, bit_mode: int = 64) -> List[Any]:
     """
     Disassembles raw machine code bytes into standard Instruction objects.
     """
+    from strilight.arch.instruction import Instruction
     return Instruction.disassemble_bytes(code_bytes, base_address=base_address, bit_mode=bit_mode)
 
 
-def compress(trace: List[Union[Instruction, LoopBlock]], min_iterations: int = 3) -> List[Union[Instruction, LoopBlock]]:
+def compress(trace: List[Any], min_iterations: int = 3) -> List[Any]:
     """
     Compresses repeated instruction execution traces into LoopBlock hierarchies.
     """
+    from strilight.arch.loop_compressor import TraceCompressor
     return TraceCompressor.compress_trace(trace, min_iterations=min_iterations)
 
 
-def evaluate(block_or_trace: Union[LoopBlock, List[Instruction]], k_passes: int = 100, iterations: int = 1000) -> LoopSummary:
+def evaluate(block_or_trace: Any, k_passes: int = 100, iterations: int = 1000) -> LoopSummary:
     """
     Evaluates abstract strided intervals and generates the closed-form loop invariant contract.
     """
+    from strilight.arch.loop_compressor import LoopBlock
+    from strilight.arch.x86.evaluator import LoopEvaluator
     if isinstance(block_or_trace, list):
         block_or_trace = LoopBlock(body=block_or_trace, iterations=iterations)
     evaluator = LoopEvaluator(k_passes=k_passes)
@@ -128,6 +135,7 @@ def analyze(code_bytes: bytes, iterations: int = 1000, base_address: int = 0x100
     One-line end-to-end loop analysis:
     Disassembles machine code bytes, wraps into a LoopBlock, and extracts closed-form deltas & invariant contracts.
     """
+    from strilight.arch.loop_compressor import LoopBlock
     instructions = disassemble(code_bytes, base_address=base_address, bit_mode=bit_mode)
     block = LoopBlock(body=instructions, iterations=iterations)
     return evaluate(block, k_passes=k_passes)

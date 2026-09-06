@@ -14,9 +14,17 @@ from strilight.engine.vsa.models import (
     SpatiotemporalTickModel,
     SpatiotemporalCoordinate,
 )
-from strilight.arch.x86.defs import REG_TO_BASE
 
 logger = logging.getLogger("strilight.engine.vsa.smt_translator")
+
+
+def _get_reg_to_base_map() -> Dict[str, str]:
+    """Gracefully extracts x86 register mapping if available, otherwise empty dict."""
+    try:
+        from strilight.arch.x86.defs import REG_TO_BASE
+        return REG_TO_BASE
+    except ImportError:
+        return {}
 
 
 class LoopStateUpdate:
@@ -320,7 +328,14 @@ class LoopSMTTranslator:
             X(N) = A(N) * X_0 + Delta_total(N)
         Evaluates directly through Universal Loop Expression Trees (register_exprs) in O(1).
         """
-        to_base = reg_to_base_fn or (lambda r: REG_TO_BASE.get(r, r))
+        if reg_to_base_fn is not None:
+            to_base = reg_to_base_fn
+        else:
+            try:
+                from strilight.arch.x86.defs import REG_TO_BASE
+                to_base = lambda r: REG_TO_BASE.get(r, r)
+            except ImportError:
+                to_base = lambda r: r
         composed_inner = composed_inner_deltas or {}
 
         def parse_mem_key(key: str) -> Tuple[bool, Optional[int], int]:
@@ -479,8 +494,9 @@ class LoopSMTTranslator:
                 if base_var in summary.register_exprs:
                     matched_expr = summary.register_exprs[base_var]
                 else:
+                    reg_map = _get_reg_to_base_map()
                     for k, expr in summary.register_exprs.items():
-                        if REG_TO_BASE.get(k, k) == REG_TO_BASE.get(base_var, base_var):
+                        if reg_map.get(k, k) == reg_map.get(base_var, base_var):
                             matched_expr = expr
                             break
 
