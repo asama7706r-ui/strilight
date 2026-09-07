@@ -181,68 +181,16 @@ class CodeGenerator:
         if getattr(summary, 'orbit_system', None) is not None:
             osys = summary.orbit_system
             lines = [f"# Rule 13: Orbit-Perturbation Closed-Form Carrier ({osys.carrier.name}) in O(1)"]
-            if getattr(osys, 'target_collection', None) == "bodies":
-                omega_val = abs(osys.carrier.angular_frequency or 0.000015)
-                lines.append("sl_central_m = bodies[0][2] if len(bodies[0]) > 2 else 39.4784")
-                lines.append("sl_n_orbiters = len(bodies)")
-                lines.append("sl_dr_x = [0.0] * sl_n_orbiters")
-                lines.append("sl_dr_y = [0.0] * sl_n_orbiters")
-                lines.append("sl_dv_x = [0.0] * sl_n_orbiters")
-                lines.append("sl_dv_y = [0.0] * sl_n_orbiters")
-                lines.append("for sl_idx in range(1, sl_n_orbiters):")
-                lines.append("    sl_r = bodies[sl_idx][0]")
-                lines.append("    sl_v = bodies[sl_idx][1]")
-                lines.append("    sl_r0 = math.sqrt(sl_r[0]**2 + sl_r[1]**2 + sl_r[2]**2)")
-                lines.append(f"    sl_omega = math.sqrt(sl_central_m / (sl_r0**3)) * (dt if 'dt' in locals() else {omega_val})")
-                lines.append("    sl_sign = 1.0 if (sl_r[0] * sl_v[1] - sl_r[1] * sl_v[0]) >= 0 else -1.0")
-                lines.append(f"    sl_theta = sl_sign * abs(sl_omega) * ({N_var})")
-                lines.append("    sl_cos = math.cos(sl_theta)")
-                lines.append("    sl_sin = math.sin(sl_theta)")
-                lines.append("    sl_nx = sl_r[0] * sl_cos - sl_r[1] * sl_sin")
-                lines.append("    sl_ny = sl_r[0] * sl_sin + sl_r[1] * sl_cos")
-                lines.append("    sl_r[0] = sl_nx")
-                lines.append("    sl_r[1] = sl_ny")
-                lines.append("    sl_nvx = sl_v[0] * sl_cos - sl_v[1] * sl_sin")
-                lines.append("    sl_nvy = sl_v[0] * sl_sin + sl_v[1] * sl_cos")
-                lines.append("    sl_v[0] = sl_nvx")
-                lines.append("    sl_v[1] = sl_nvy")
-
-                # Per-body perturbation epochs & secular drifts
-                if getattr(osys, 'body_perturbations', None):
-                    lines.append("# Per-body perturbation epochs & secular drifts")
-                    for idx, p_model in osys.body_perturbations.items():
-                        stride = p_model.epoch_stride
-                        k_start = p_model.k_start
-                        drift_x = p_model.secular_drift.get("x", 0.0)
-                        drift_y = p_model.secular_drift.get("y", 0.0)
-                        imp_vx = p_model.impulse_vector.get("vx", 0.0)
-                        imp_vy = p_model.impulse_vector.get("vy", 0.0)
-                        lines.append(f"if {idx} < sl_n_orbiters:")
-                        lines.append(f"    sl_k_{idx} = max(0, ({N_var} - {k_start}) // {stride}) if ({N_var}) >= {k_start} else 0")
-                        if drift_x != 0.0:
-                            lines.append(f"    sl_dr_x[{idx}] += sl_k_{idx} * {drift_x}")
-                        if drift_y != 0.0:
-                            lines.append(f"    sl_dr_y[{idx}] += sl_k_{idx} * {drift_y}")
-                        if imp_vx != 0.0:
-                            lines.append(f"    sl_dv_x[{idx}] += sl_k_{idx} * {imp_vx}")
-                        if imp_vy != 0.0:
-                            lines.append(f"    sl_dv_y[{idx}] += sl_k_{idx} * {imp_vy}")
-
-                # Coupled neighbor perturbation cascade transmission
-                if getattr(osys, 'neighbor_cascade_matrix', None):
-                    lines.append("# Coupled neighbor perturbation cascade transmission")
-                    for src_idx, tgt_idx, ratio in osys.neighbor_cascade_matrix:
-                        lines.append(f"if {src_idx} < sl_n_orbiters and {tgt_idx} < sl_n_orbiters:")
-                        lines.append(f"    sl_dr_x[{tgt_idx}] += {ratio} * sl_dr_x[{src_idx}]")
-                        lines.append(f"    sl_dr_y[{tgt_idx}] += {ratio} * sl_dr_y[{src_idx}]")
-                        lines.append(f"    sl_dv_x[{tgt_idx}] += {ratio} * sl_dv_x[{src_idx}]")
-                        lines.append(f"    sl_dv_y[{tgt_idx}] += {ratio} * sl_dv_y[{src_idx}]")
-
-                lines.append("for sl_idx in range(1, sl_n_orbiters):")
-                lines.append("    bodies[sl_idx][0][0] += sl_dr_x[sl_idx]")
-                lines.append("    bodies[sl_idx][0][1] += sl_dr_y[sl_idx]")
-                lines.append("    bodies[sl_idx][1][0] += sl_dv_x[sl_idx]")
-                lines.append("    bodies[sl_idx][1][1] += sl_dv_y[sl_idx]")
+            if getattr(osys, 'target_collection', None):
+                col = osys.target_collection
+                lines.append(f"if '{col}' in locals():")
+                lines.append(f"    _dt_val = dt if 'dt' in locals() else 0.01")
+                lines.append(f"    try:")
+                lines.append(f"        {col}[:] = _strilight_orbit_system.eval_multi_body_state({N_var}, {col}, _dt_val)")
+                lines.append(f"    except NameError:")
+                lines.append(f"        from strilight.engine.vsa.models import OrbitPerturbationSystem, OrbitCarrierDescriptor")
+                lines.append(f"        _orbit_sys = OrbitPerturbationSystem(OrbitCarrierDescriptor('dynamic', None))")
+                lines.append(f"        {col}[:] = _orbit_sys.eval_multi_body_state({N_var}, {col}, _dt_val)")
                 return "\n".join(lines)
             elif osys.carrier.angular_frequency is not None and osys.carrier.harmonic_pairs:
                 lines.append(f"sl_theta = {osys.carrier.angular_frequency} * ({N_var})")

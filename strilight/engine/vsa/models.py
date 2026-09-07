@@ -1474,12 +1474,14 @@ class OrbitPerturbationSystem:
         """
         import copy
         import math
-
         bodies = copy.deepcopy(initial_bodies)
         if len(bodies) <= 1 or k <= 0:
             return bodies
 
-        central_mass = bodies[0][2] if len(bodies[0]) > 2 else 39.4784
+        # Dynamically discover dominant central attractor (body with largest mass in collection)
+        central_idx = max(range(len(bodies)), key=lambda i: bodies[i][2] if len(bodies[i]) > 2 else 0.0)
+        central_mass = bodies[central_idx][2] if len(bodies[central_idx]) > 2 else 1.0
+        central_pos = bodies[central_idx][0]
         dt_factor = dt
 
         n_orbiters = len(bodies)
@@ -1488,22 +1490,34 @@ class OrbitPerturbationSystem:
         dv_x = [0.0] * n_orbiters
         dv_y = [0.0] * n_orbiters
 
-        # 1. Unperturbed Keplerian harmonic carrier rotation for all orbiters
-        for idx in range(1, n_orbiters):
+        # 1. Keplerian harmonic carrier rotation for all orbiting bodies around the central attractor
+        orbiters_info = []
+        for idx in range(n_orbiters):
+            if idx == central_idx:
+                continue
             r = bodies[idx][0]
             v = bodies[idx][1]
-            r0 = math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2])
+            rel_x = r[0] - central_pos[0]
+            rel_y = r[1] - central_pos[1]
+            rel_z = r[2] - central_pos[2]
+            r0 = math.sqrt(rel_x * rel_x + rel_y * rel_y + rel_z * rel_z)
+            if r0 < 1e-12:
+                continue
+
+            b_mass = bodies[idx][2] if len(bodies[idx]) > 2 else 0.001
             omega = math.sqrt(central_mass / (r0 ** 3)) * dt_factor
-            sl_sign = 1.0 if (r[0] * v[1] - r[1] * v[0]) >= 0 else -1.0
+            orbiters_info.append({"idx": idx, "r": r0, "mass": b_mass, "omega": omega})
+
+            sl_sign = 1.0 if (rel_x * v[1] - rel_y * v[0]) >= 0 else -1.0
             theta = sl_sign * abs(omega) * k
             cos_t = math.cos(theta)
             sin_t = math.sin(theta)
 
-            # Rotate positions
-            nx = r[0] * cos_t - r[1] * sin_t
-            ny = r[0] * sin_t + r[1] * cos_t
-            r[0] = nx
-            r[1] = ny
+            # Rotate positions around central attractor
+            nx = rel_x * cos_t - rel_y * sin_t
+            ny = rel_x * sin_t + rel_y * cos_t
+            r[0] = central_pos[0] + nx
+            r[1] = central_pos[1] + ny
 
             # Rotate velocities
             nvx = v[0] * cos_t - v[1] * sin_t
@@ -1511,25 +1525,58 @@ class OrbitPerturbationSystem:
             v[0] = nvx
             v[1] = nvy
 
-            # 2. Accumulate direct episodic impulses and secular drifts
-            if idx in self.body_perturbations:
-                p_model = self.body_perturbations[idx]
-                impulses = p_model.eval_accumulated_impulse(k)
-                dr_x[idx] = impulses.get("x", 0.0)
-                dr_y[idx] = impulses.get("y", 0.0)
-                dv_x[idx] = impulses.get("vx", 0.0)
-                dv_y[idx] = impulses.get("vy", 0.0)
+        # 2. Accumulate episodic impulses and synodic perturbation models
+        if self.body_perturbations:
+            for idx, p_model in self.body_perturbations.items():
+                if idx < n_orbiters:
+                    impulses = p_model.eval_accumulated_impulse(k)
+                    dr_x[idx] = impulses.get("x", 0.0)
+                    dr_y[idx] = impulses.get("y", 0.0)
+                    dv_x[idx] = impulses.get("vx", 0.0)
+                    dv_y[idx] = impulses.get("vy", 0.0)
+        elif len(orbiters_info) > 1:
+            # Dynamically compute mutual synodic impulses from primary perturber
+            for i_info in orbiters_info:
+                idx_i = i_info["idx"]
+                r_i = i_info["r"]
+                omega_i = i_info["omega"]
 
-        # 3. Propagate the coupled neighbor cascade transmission
-        for src_idx, tgt_idx, ratio in self.neighbor_cascade_matrix:
-            if src_idx < n_orbiters and tgt_idx < n_orbiters:
-                dr_x[tgt_idx] += ratio * dr_x[src_idx]
-                dr_y[tgt_idx] += ratio * dr_y[src_idx]
-                dv_x[tgt_idx] += ratio * dv_x[src_idx]
-                dv_y[tgt_idx] += ratio * dv_y[src_idx]
+                # Find dominant perturber j for body i
+                best_j = None
+                max_force = -1.0
+                for j_info in orbiters_info:
+                    if j_info["idx"] == idx_i:
+                        continue
+                    dist_ij = max(0.1, abs(r_i - j_info["r"]))
+                    force_ij = j_info["mass"] / (dist_ij ** 2)
+                    if force_ij > max_force:
+                        max_force = force_ij
+                        best_j = j_info
 
-        # 4. Apply final displacements to position and velocity buffers
-        for idx in range(1, n_orbiters):
+                if best_j:
+                    delta_omega = abs(omega_i - best_j["omega"])
+                    t_synodic = max(10, int(abs(2 * math.pi / delta_omega))) if delta_omega > 1e-9 else 1000
+                    dist_ij = max(0.1, abs(r_i - best_j["r"]))
+                    impulse_mag = (best_j["mass"] * dt) / (dist_ij ** 2)
+                    sign = -1.0 if r_i < best_j["r"] else 1.0
+
+                    k_epochs = max(0, k // t_synodic)
+                    dr_x[idx_i] += k_epochs * sign * impulse_mag * dt * 0.05
+                    dv_x[idx_i] += k_epochs * sign * impulse_mag * 0.1
+
+        # 3. Propagate coupled neighbor cascade transmission
+        if self.neighbor_cascade_matrix:
+            for src_idx, tgt_idx, ratio in self.neighbor_cascade_matrix:
+                if src_idx < n_orbiters and tgt_idx < n_orbiters:
+                    dr_x[tgt_idx] += ratio * dr_x[src_idx]
+                    dr_y[tgt_idx] += ratio * dr_y[src_idx]
+                    dv_x[tgt_idx] += ratio * dv_x[src_idx]
+                    dv_y[tgt_idx] += ratio * dv_y[src_idx]
+
+        # 4. Apply final displacements
+        for idx in range(n_orbiters):
+            if idx == central_idx:
+                continue
             bodies[idx][0][0] += dr_x[idx]
             bodies[idx][0][1] += dr_y[idx]
             bodies[idx][1][0] += dv_x[idx]

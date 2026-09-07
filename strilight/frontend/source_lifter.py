@@ -196,6 +196,8 @@ def accelerate(fn: Optional[Callable] = None, *, guarded: bool = True) -> Callab
         from fractions import Fraction
         fn_globals.setdefault("Fraction", Fraction)
         fn_globals.setdefault("math", math)
+        if getattr(summary, 'orbit_system', None) is not None:
+            fn_globals["_strilight_orbit_system"] = summary.orbit_system
 
         local_env: Dict[str, Any] = {}
         exec(compiled_code, fn_globals, local_env)
